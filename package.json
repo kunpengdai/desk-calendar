@@ -1,0 +1,27 @@
+{
+  "name": "desk-calendar",
+  "version": "1.5.0",
+  "description": "Google 日历 + Google Tasks 桌面小组件",
+  "main": "src/main.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "demo": "electron . --demo",
+    "smoke": "electron . --demo --smoke",
+    "test": "node --test test/",
+    "build": "electron-builder --win portable --x64"
+  },
+  "devDependencies": {
+    "electron": "44.8.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "local.deskcalendar",
+    "productName": "DeskCalendar",
+    "directories": { "output": "release" },
+    "electronDist": "node_modules/electron/dist",
+    "files": ["src/**/*", "package.json"],
+    "win": { "target": "portable", "signAndEditExecutable": false },
+    "portable": { "artifactName": "DeskCalendar-${version}.exe" }
+  }
+}
