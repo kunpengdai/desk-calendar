@@ -280,3 +280,9 @@ dialog::backdrop { background: #0009; }
 .task:hover .t-del, .t-del:focus-visible, .t-del.confirm { opacity: 1; }
 .t-del:hover { background: #f28b8222; filter: none; }
 .t-del.confirm { width: auto; padding: 0 8px; filter: none; background: var(--danger); color: #2a0d0a; font-size: 11px; font-weight: 600; }
+
+/* 待同步（离线时的修改） */
+.pending .a-title::after, .pending .t-title::after, .block.pending .b-title::after, .chip.pending::after, .wk-bar.pending::after {
+  content: " ⟳"; color: var(--warn); font-size: 10px; font-weight: 400; text-decoration: none; display: inline-block;
+}
+.block.pending, .wk-bar.pending { outline: 1px dashed #fdd66399; outline-offset: -1px; }

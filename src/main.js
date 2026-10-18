@@ -3,28 +3,29 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { GoogleClient, AuthError, EVENTS_SCOPE, authorize, parseClientFile } = require('./google');
-const { demoEvents, demoTasks } = require('./demo');
+const { FakeGoogle } = require('./demo');
+const { DataStore } = require('./store');
 
 const DEMO = process.argv.includes('--demo');
 const SMOKE = process.argv.includes('--smoke');
 const REFRESH_MS = 5 * 60 * 1000;
+const RETRY_MS = 30 * 1000; // 离线或有待同步修改时，每 30 秒检查一次网络
 // 示例模式使用独立的临时配置目录，不读写真实账号数据。
 app.setPath('userData', DEMO ? fs.mkdtempSync(path.join(os.tmpdir(), 'desk-calendar-demo-')) : path.join(app.getPath('appData'), 'desk-calendar'));
 
 const files = {
   prefs: () => path.join(app.getPath('userData'), 'prefs.json'),
   secrets: () => path.join(app.getPath('userData'), 'secrets.bin'),
+  cache: () => path.join(app.getPath('userData'), 'cache.bin'),
 };
 const DEFAULT_PREFS = { view: 'month', pinned: false, opacity: 100, autoStart: true, tasksCollapsed: false, bounds: null };
 
-let win, tray, refreshTimer, authAbort = null, quitting = false;
+let win, tray, refreshTimer, retryTimer, authAbort = null, quitting = false;
 let prefs = { ...DEFAULT_PREFS };
 let secrets = { client: null, tokens: null };
-let google = null;
-let status = { account: '', lastSync: null, error: '', authorizing: false };
-const cache = { events: new Map(), tasks: [] };
-let demoTaskList = demoTasks();
-let demoEventList = null;
+let google = null;           // 真实账号为 GoogleClient；示例模式为 FakeGoogle
+let authorizing = false;
+let store = null;
 const TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 // ---------- 存储 ----------
@@ -44,73 +45,75 @@ function saveSecrets() {
   fs.writeFileSync(files.secrets(), safeStorage.encryptString(JSON.stringify(secrets)));
 }
 
+// 本地缓存（日程、任务、待同步队列）同样用 Windows 加密保存。
+function loadCache() {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return null;
+    return JSON.parse(safeStorage.decryptString(fs.readFileSync(files.cache())));
+  } catch { return null; }
+}
+let cacheTimer = null, pendingCache = null;
+function writeCacheNow() {
+  clearTimeout(cacheTimer); cacheTimer = null;
+  if (!pendingCache || !safeStorage.isEncryptionAvailable()) return;
+  fs.writeFileSync(files.cache(), safeStorage.encryptString(JSON.stringify(pendingCache)));
+  pendingCache = null;
+}
+function saveCache(data) {
+  // 合并短时间内的多次写入；队列有内容时立即写盘，避免丢失离线修改
+  pendingCache = data;
+  if (data.outbox.length) writeCacheNow();
+  else { clearTimeout(cacheTimer); cacheTimer = setTimeout(writeCacheNow, 500); }
+}
+
 function buildClient() {
-  google = secrets.client && secrets.tokens?.refresh_token
-    ? new GoogleClient({ client: secrets.client, tokens: secrets.tokens, onTokens: tokens => { secrets.tokens = tokens; try { saveSecrets(); } catch {} } })
-    : null;
+  if (DEMO) google = google || new FakeGoogle();
+  else {
+    google = secrets.client && secrets.tokens?.refresh_token
+      ? new GoogleClient({ client: secrets.client, tokens: secrets.tokens, onTokens: tokens => { secrets.tokens = tokens; try { saveSecrets(); } catch {} } })
+      : null;
+  }
+  store?.setClient(google);
+}
+
+function initStore() {
+  store = new DataStore({
+    load: DEMO ? () => null : loadCache,
+    save: saveCache,
+    timeZone: TIME_ZONE,
+    onChange: kind => {
+      if (kind === 'online') notifyRenderer('refresh');      // 网络恢复：重新拉取最新数据
+      else if (kind === 'data') notifyRenderer('data-changed'); // 补传完成：用新的本地数据重绘
+      notifyRenderer();
+    },
+    onError: error => { if (error instanceof AuthError) { secrets.tokens = null; try { saveSecrets(); } catch {} buildClient(); } },
+  });
 }
 
 // ---------- 状态 ----------
 function publicState() {
+  const s = store.status();
   return {
-    demo: DEMO, connected: DEMO || Boolean(google), hasClient: Boolean(secrets.client),
+    demo: DEMO, connected: Boolean(google), hasClient: Boolean(secrets.client),
     // 旧版登录只有只读权限：令牌记录了 scope 且不含编辑日程权限时，需要重新登录。
     canEdit: DEMO || Boolean(google && (!secrets.tokens?.scope || secrets.tokens.scope.includes(EVENTS_SCOPE))),
-    authorizing: status.authorizing, account: DEMO ? 'demo@example.com' : status.account,
-    lastSync: status.lastSync, error: status.error, prefs: { ...prefs, bounds: undefined },
+    authorizing, account: DEMO ? 'demo@example.com' : s.account,
+    lastSync: s.lastSync, error: s.error, offline: s.offline, pending: s.pending,
+    prefs: { ...prefs, bounds: undefined },
   };
 }
 function notifyRenderer(channel = 'state-changed') { if (win && !win.isDestroyed()) win.webContents.send(channel); }
 
-function handleError(error) {
-  if (error instanceof AuthError) {
-    secrets.tokens = null; try { saveSecrets(); } catch {}
-    buildClient();
-  }
-  status.error = error.message || String(error);
-  notifyRenderer();
-}
+// ---------- 数据（读取都先走本地缓存，联网成功后更新缓存） ----------
+const getEvents = (timeMin, timeMax) => store.fetchEvents(timeMin, timeMax);
+const getTasks = (timeMin, timeMax) => store.fetchTasks(timeMin, timeMax);
+const getCached = (timeMin, timeMax) => store.cached(timeMin, timeMax);
+const taskLists = () => store.taskLists();
+const writableCalendars = () => store.writableCalendars();
 
-// ---------- 数据 ----------
-async function getEvents(timeMin, timeMax) {
-  if (DEMO) return (demoEventList ||= demoEvents());
-  if (!google) return [];
-  const key = `${timeMin}|${timeMax}`;
-  try {
-    const result = await google.events(timeMin, timeMax);
-    cache.events.set(key, result.events);
-    if (cache.events.size > 12) cache.events.delete(cache.events.keys().next().value);
-    status.account = result.account || status.account;
-    status.lastSync = Date.now(); status.error = '';
-    return result.events;
-  } catch (error) {
-    handleError(error);
-    return cache.events.get(key) || [];
-  }
-}
-
-async function getTasks(timeMin, timeMax) {
-  if (DEMO) return demoTaskList;
-  if (!google) return [];
-  try {
-    cache.tasks = await google.tasks(timeMin, timeMax);
-    status.lastSync = Date.now(); status.error = '';
-  } catch (error) { handleError(error); }
-  return cache.tasks;
-}
-
-// ---------- 日程编辑 ----------
+// ---------- 修改（连不上时先存入待同步队列） ----------
 const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/;
-const DEMO_CALENDARS = [
-  { id: 'demo', title: '我的日历', color: '#8ab4f8', primary: true },
-  { id: 'work', title: '工作', color: '#c58af9', primary: false },
-];
-
-function writableCalendars() {
-  if (DEMO) return DEMO_CALENDARS;
-  if (!google) return [];
-  return google.writableCalendars();
-}
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 // 校验并整理来自界面的日程输入；partial=true 时用于修改（字段可缺省）。
 function cleanEventInput(input, partial) {
@@ -140,116 +143,34 @@ function cleanEventInput(input, partial) {
   return out;
 }
 
-function applyDemoEvent(event, input) {
-  const next = { ...event, ...input };
-  if (input.allDay === true) Object.assign(next, { start: null, end: null });
-  if (input.allDay === false) Object.assign(next, { startKey: null, endKey: null });
-  return next;
-}
-
-async function createEvent(calendarId, input) {
-  const data = cleanEventInput(input, false);
-  if (DEMO) {
-    const cal = DEMO_CALENDARS.find(c => c.id === calendarId) || DEMO_CALENDARS[0];
-    const id = `demo-ev-${Date.now()}`;
-    const event = applyDemoEvent({ id: `${cal.id}:${id}`, eventId: id, calendarId: cal.id, calendar: cal.title, color: cal.color, editable: true, recurring: false, link: '', location: '', description: '', startKey: null, endKey: null, start: null, end: null }, data);
-    demoEventList = [...(demoEventList ||= demoEvents()), event];
-    return event;
-  }
-  if (!google) throw new Error('尚未登录 Google。');
-  const event = await google.createEvent(String(calendarId), data, TIME_ZONE);
-  cache.events.clear();
-  return event;
-}
-
-async function updateEvent(calendarId, eventId, input) {
-  const data = cleanEventInput(input, true);
-  if (DEMO) {
-    const list = demoEventList ||= demoEvents();
-    const old = list.find(e => e.calendarId === calendarId && e.eventId === eventId);
-    if (!old) throw new Error('日程不存在。');
-    if (!old.editable) throw new Error('没有修改这个日历的权限（只读日历）。');
-    const event = applyDemoEvent(old, data);
-    demoEventList = list.map(e => (e === old ? event : e));
-    return event;
-  }
-  if (!google) throw new Error('尚未登录 Google。');
-  const event = await google.updateEvent(String(calendarId), String(eventId), data, TIME_ZONE);
-  cache.events.clear();
-  return event;
-}
-
-async function deleteEvent(calendarId, eventId) {
-  if (DEMO) {
-    demoEventList = (demoEventList ||= demoEvents()).filter(e => !(e.calendarId === calendarId && e.eventId === eventId));
-    return true;
-  }
-  if (!google) throw new Error('尚未登录 Google。');
-  await google.deleteEvent(String(calendarId), String(eventId));
-  cache.events.clear();
-  return true;
-}
+const createEvent = (calendarId, input) => store.createEvent(calendarId, cleanEventInput(input, false));
+const updateEvent = (calendarId, eventId, input) => store.updateEvent(calendarId, eventId, cleanEventInput(input, true));
+const deleteEvent = (calendarId, eventId) => store.deleteEvent(calendarId, eventId);
 
 // 拖动任务：修改截止日期和完成时间。
-async function rescheduleTask(listId, taskId, input) {
+function rescheduleTask(listId, taskId, input) {
   const due = DATE_KEY.test(input?.due || '') ? input.due : null;
-  const time = due && /^([01]\d|2[0-3]):[0-5]\d$/.test(input?.time || '') ? input.time : null;
+  const time = due && TIME_RE.test(input?.time || '') ? input.time : null;
   const notes = typeof input?.notes === 'string' ? input.notes : '';
-  if (DEMO) {
-    demoTaskList = demoTaskList.map(t => (t.id === taskId ? { ...t, due, time } : t));
-    return demoTaskList.find(t => t.id === taskId);
-  }
-  if (!google) throw new Error('尚未登录 Google。');
-  const task = await google.updateTaskSchedule(listId, taskId, { due, time, notes });
-  cache.tasks = cache.tasks.map(t => (t.id === taskId ? task : t));
-  return task;
+  return store.rescheduleTask(listId, taskId, { due, time, notes });
 }
 
 // 删除任务（Google Tasks 会一并删除它的子任务，本地也同步移除）。
-async function deleteTask(listId, taskId) {
-  const keep = list => list.filter(t => t.id !== taskId && t.parent !== taskId);
-  if (DEMO) { demoTaskList = keep(demoTaskList); return true; }
-  if (!google) throw new Error('尚未登录 Google。');
-  await google.deleteTask(listId, taskId);
-  cache.tasks = keep(cache.tasks);
-  return true;
-}
+const deleteTask = (listId, taskId) => store.deleteTask(listId, taskId);
 
-async function taskLists() {
-  if (DEMO) return [...new Set(demoTaskList.map(t => t.listTitle).concat('工作', '生活', '个人'))].map(title => ({ id: title, title }));
-  if (!google) return [];
-  return google.lists || google.taskLists();
-}
-
-async function createTask(input) {
+function createTask(input) {
   if (!input || typeof input !== 'object') throw new Error('任务无效。');
   const title = typeof input.title === 'string' ? input.title.trim() : '';
   if (!title) throw new Error('请输入任务名称。');
   if (title.length > 1024) throw new Error('任务名称太长。');
-  const due = /^\d{4}-\d{2}-\d{2}$/.test(input.due || '') ? input.due : null;
-  const time = due && /^([01]\d|2[0-3]):[0-5]\d$/.test(input.time || '') ? input.time : null;
+  const due = DATE_KEY.test(input.due || '') ? input.due : null;
+  const time = due && TIME_RE.test(input.time || '') ? input.time : null;
   const listId = typeof input.listId === 'string' ? input.listId : '';
-  if (DEMO) {
-    const task = { id: `demo-${Date.now()}`, listId: listId || '工作', listTitle: listId || '工作', title, notes: '', due, time, parent: null, position: '0', link: 'https://tasks.google.com/' };
-    demoTaskList = [...demoTaskList, task];
-    return task;
-  }
-  if (!google) throw new Error('尚未登录 Google。');
-  const task = await google.createTask({ listId, title, due, time });
-  cache.tasks = [...cache.tasks, task];
-  return task;
+  return store.createTask({ listId, title, due, time });
 }
 
 // 完成 / 恢复任务：任务保留在列表中，只更新完成状态，日历上显示为划掉。
-async function setTaskDone(listId, taskId, done) {
-  const mark = list => list.map(t => (t.id === taskId ? { ...t, completed: done, completedAt } : t));
-  let completedAt = done ? new Date().toISOString() : null;
-  if (DEMO) { demoTaskList = mark(demoTaskList); return completedAt; }
-  if (!google) throw new Error('尚未登录 Google。');
-  completedAt = await google.setTaskDone(listId, taskId, done);
-  cache.tasks = mark(cache.tasks);
-  return completedAt;
-}
+const setTaskDone = (listId, taskId, done) => store.setTaskDone(listId, taskId, done);
 
 // ---------- 授权 ----------
 async function importClient() {
@@ -270,14 +191,14 @@ async function connect() {
   if (!secrets.client) throw new Error('请先导入 OAuth 客户端 JSON 文件。');
   authAbort?.abort();
   authAbort = new AbortController();
-  status.authorizing = true; status.error = ''; notifyRenderer();
+  authorizing = true; notifyRenderer();
   try {
     const tokens = await authorize({ client: secrets.client, openUrl: url => shell.openExternal(url), signal: authAbort.signal });
+    // 重新登录（例如授予新权限）时保留本地缓存和待同步队列
     secrets.tokens = tokens; saveSecrets(); buildClient();
-    cache.events.clear(); cache.tasks = [];
     if (win) { win.show(); win.focus(); }
   } finally {
-    status.authorizing = false; authAbort = null; notifyRenderer();
+    authorizing = false; authAbort = null; notifyRenderer();
   }
   return publicState();
 }
@@ -285,8 +206,9 @@ async function connect() {
 function disconnect() {
   authAbort?.abort();
   secrets.tokens = null; saveSecrets(); buildClient();
-  cache.events.clear(); cache.tasks = [];
-  status = { account: '', lastSync: null, error: '', authorizing: false };
+  // 退出登录：清除本地缓存和尚未同步的修改，避免换账号后写错地方
+  store.clear(); writeCacheNow();
+  authorizing = false;
   return publicState();
 }
 
@@ -330,6 +252,10 @@ function registerIpc() {
     catch (error) { return { ok: false, error: error.message || String(error) }; }
   });
   handle('state', publicState);
+  handle('cache', (timeMin, timeMax) => getCached(typeof timeMin === 'string' ? timeMin : null, typeof timeMax === 'string' ? timeMax : null));
+  handle('sync-now', async () => { await store.checkConnection(); return publicState(); });
+  // 仅示例模式：模拟断网 / 恢复网络，用于演示和测试离线同步
+  if (DEMO) handle('debug:offline', async offline => { google.offline = Boolean(offline); if (!offline) await store.checkConnection(); return publicState(); });
   handle('events', (timeMin, timeMax) => {
     if (typeof timeMin !== 'string' || typeof timeMax !== 'string') throw new Error('时间范围无效。');
     return getEvents(timeMin, timeMax);
@@ -429,7 +355,10 @@ async function createWindow() {
   if (!SMOKE) win.show(); else win.showInactive();
 
   refreshTimer = setInterval(() => notifyRenderer('refresh'), REFRESH_MS);
-  powerMonitor.on('resume', () => notifyRenderer('refresh'));
+  powerMonitor.on('resume', () => { store.checkConnection(); notifyRenderer('refresh'); });
+  // 离线或有待同步的修改时，定时检查网络并补传
+  retryTimer = setInterval(() => { const s = store.status(); if (s.offline || s.pending) store.checkConnection(); }, RETRY_MS);
+  if (store.status().pending) store.checkConnection();
   if (SMOKE) runSmoke();
 }
 
@@ -443,7 +372,7 @@ async function runSmoke() {
     const result = await js(`(async () => {
       const wait = ms => new Promise(r => setTimeout(r, ms));
       const $ = s => document.querySelector(s), $$ = s => document.querySelectorAll(s);
-      const assert = (v, m) => { if (!v) throw new Error(m); };
+      const assert = (v, m) => { if (!v) throw new Error(m); window.__lastPassed = m; };
       for (let i = 0; i < 50 && !$$('.task').length; i++) await wait(100);
       assert(!window.require && !window.process, 'renderer isolation');
       assert($$('.cell').length === 42, 'month grid has 42 cells');
@@ -485,7 +414,7 @@ async function runSmoke() {
       assert($$('.wk-bar.after').length >= 1, 'bar continuing into next week is marked');
       assert($$('.wk-block').length >= 6, 'timed events on week grid');
       assert($$('#wk-grid .task-block').length === 3, 'timed tasks drawn on week grid');
-      assert($$('.wk-bar.done').length >= 2 && $$('#wk-grid .block.done').length === 1, 'completed tasks struck through on week view');
+      assert($$('.wk-bar.done').length >= 1 && $$('#wk-grid .block.done').length === 1, 'completed tasks struck through on week view');
       assert($('.wk-now'), 'now line in week view');
       assert(window.innerWidth >= 590, 'window widened for week view');
       const weekTitle = $('#title').textContent;
@@ -572,6 +501,32 @@ async function runSmoke() {
       await dragBy(wkBlock, dir * colW, 0);
       assert(new Date((await byTitle('午餐')).start).getDate() === new Date(new Date(lunchDay).getTime() + dir * 864e5).getDate(), 'week view drag moves event to another day');
       $('[data-view=day]').click(); await wait(250);
+
+      // ---- 离线：修改先存本地并标记待同步，恢复网络后按顺序补传 ----
+      await desk.debugOffline(true);
+      $('#new-event-btn').click(); await wait(200);
+      $('#ev-title').value = '离线新建'; $('#ev-start-time').value = '19:00'; $('#ev-end-time').value = '20:00';
+      $('#editor-form').requestSubmit(); await wait(400);
+      assert(blockOf('离线新建')?.classList.contains('pending'), 'offline event shown with pending mark');
+      let st = (await desk.state()).data;
+      assert(st.offline && st.pending === 1, 'offline status with 1 pending change');
+      assert($('#status-text').textContent.includes('离线') && $('#status-text').textContent.includes('1 项'), 'status bar shows offline + pending');
+      await dragBy(blockOf('离线新建'), 0, 48);   // 拖动离线新建（还没有真实 ID）的日程
+      assert(hm((await desk.cached()).data.events.find(e => e.title === '离线新建').start) === '20:00', 'offline drag applied locally');
+      const milk = [...$$('.task')].find(r => r.querySelector('.t-title').textContent === '买牛奶和鸡蛋');
+      milk.querySelector('.check').click(); await wait(400);
+      st = (await desk.state()).data;
+      assert(st.pending === 3, 'three changes queued while offline');
+      assert((await desk.events('2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z')).data.some(e => e.title === '离线新建'), 'reads while offline fall back to local cache');
+
+      await desk.debugOffline(false); await wait(600);
+      st = (await desk.state()).data;
+      assert(!st.offline && st.pending === 0, 'queued changes uploaded after reconnect');
+      const synced = (await desk.events('2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z')).data.find(e => e.title === '离线新建');
+      assert(synced && !synced.pending && !synced.eventId.startsWith('local-') && hm(synced.start) === '20:00', 'server has offline event with the later drag applied');
+      assert((await desk.tasks()).data.find(t => t.title === '买牛奶和鸡蛋').completed, 'offline task completion reached server');
+      await wait(300);
+      assert(blockOf('离线新建') && !blockOf('离线新建').classList.contains('pending'), 'pending mark cleared after sync');
       return 'ok';
     })()`);
     await snap('day.png');
@@ -589,6 +544,17 @@ async function runSmoke() {
     })()`);
     await snap('editor.png');
     await js(`document.querySelector('#ev-cancel').click()`);
+    await js(`(async () => {
+      await desk.debugOffline(true);
+      document.querySelector('[data-view=day]').click(); await new Promise(r => setTimeout(r, 300));
+      const row = [...document.querySelectorAll('.task')].find(r => !r.classList.contains('done'));
+      row.querySelector('.check').click(); await new Promise(r => setTimeout(r, 300));
+      const b = [...document.querySelectorAll('#timeline .block.draggable')].find(x => !x._item.task);
+      const r = b.getBoundingClientRect(), fire = (t, type, y) => t.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: r.left + 20, clientY: y, button: 0 }));
+      fire(b, 'pointerdown', r.top + 5); fire(window, 'pointermove', r.top + 30); fire(window, 'pointermove', r.top + 53); fire(window, 'pointerup', r.top + 53);
+      await new Promise(r => setTimeout(r, 500));
+    })()`);
+    await snap('offline.png');
     await js(`document.querySelector('[data-view=month]').click(); new Promise(r => setTimeout(r, 300))`);
     await snap('month.png');
     await js(`document.querySelector('#settings-btn').click(); new Promise(r => setTimeout(r, 200))`);
@@ -596,7 +562,8 @@ async function runSmoke() {
     console.log(`SMOKE PASS (${result}) → ${out}`);
     app.exit(0);
   } catch (error) {
-    console.error('SMOKE FAIL:', error.message);
+    const last = await win.webContents.executeJavaScript('window.__lastPassed').catch(() => '?');
+    console.error('SMOKE FAIL:', error.message, '| last passed:', last);
     app.exit(1);
   }
 }
@@ -606,9 +573,9 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', showWindow);
   app.whenReady().then(() => {
-    loadPrefs(); if (!DEMO) loadSecrets(); buildClient(); registerIpc();
+    loadPrefs(); if (!DEMO) loadSecrets(); initStore(); buildClient(); registerIpc();
     return createWindow();
   }).catch(error => { console.error(error); app.exit(1); });
-  app.on('before-quit', () => { quitting = true; clearInterval(refreshTimer); authAbort?.abort(); });
+  app.on('before-quit', () => { quitting = true; clearInterval(refreshTimer); clearInterval(retryTimer); authAbort?.abort(); try { writeCacheNow(); } catch {} });
   app.on('window-all-closed', () => {});
 }

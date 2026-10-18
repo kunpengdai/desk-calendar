@@ -1,6 +1,6 @@
 {
   "name": "desk-calendar",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Google 日历 + Google Tasks 桌面小组件",
   "main": "src/main.js",
   "license": "MIT",

@@ -49,6 +49,7 @@ const canDrag = item => (item.task ? !item.task.completed : Boolean(item.editabl
 // 时间轴条目的通用设置：点击打开详情（拖动结束时忽略这次点击），可拖动的加上调整结束时间的把手。
 function decorateBlock(block, item, key, col) {
   Object.assign(block, { _item: item, _day: key, _col: col });
+  block.classList.toggle('pending', Boolean(item.pending || item.task?.pending));
   block.addEventListener('click', () => { if (block._dragged) { block._dragged = false; return; } openItem(item); });
   if (!canDrag(item)) return;
   block.classList.add('draggable');
@@ -84,6 +85,13 @@ async function load(force = false) {
   const { timeMin, timeMax } = rangeFor(selected), key = `${timeMin}|${timeMax}`;
   if (!force && key === loadedRange) { render(); return; }
   const token = ++loadToken;
+  // 先用本地缓存立即显示，再联网更新
+  if (key !== loadedRange) {
+    try {
+      const cached = await call(desk.cached(timeMin, timeMax));
+      if (token === loadToken) { events = cached.events; tasks = cached.tasks; loadedRange = key; render(); }
+    } catch { /* 没有缓存时直接等联网结果 */ }
+  }
   $('#refresh-btn').classList.add('spin');
   try {
     const [ev, ts] = await Promise.all([call(desk.events(timeMin, timeMax)), call(desk.tasks(timeMin, timeMax))]);
@@ -97,7 +105,19 @@ async function load(force = false) {
   render();
 }
 
-async function refreshState() { app = await call(desk.state()); view = app.prefs.view; renderChrome(); }
+async function refreshState(initial = false) { app = await call(desk.state()); if (initial) view = app.prefs.view; renderChrome(); }
+
+// 后台补传完成（离线新建的条目换成了真实 ID 等）：从本地缓存重新读取并重绘
+async function reloadFromCache() {
+  if (!loadedRange || drag) return;
+  const [timeMin, timeMax] = loadedRange.split('|');
+  try {
+    const cached = await call(desk.cached(timeMin, timeMax));
+    events = cached.events; tasks = cached.tasks;
+    app = await call(desk.state());
+    render();
+  } catch (error) { report(error); }
+}
 
 // ---------- 渲染 ----------
 function render() {
@@ -137,9 +157,12 @@ function renderChrome() {
   $('#tasks-toggle').setAttribute('aria-expanded', String(!p.tasksCollapsed));
 
   let text;
-  if (app.demo) text = '示例模式 · 非真实数据';
-  else if (app.authorizing) text = '请在浏览器中完成 Google 登录…';
-  else if (app.error) text = `⚠ ${app.error}`;
+  const demo = app.demo ? '示例模式 · ' : '';
+  if (app.authorizing) text = '请在浏览器中完成 Google 登录…';
+  else if (app.offline) text = `${demo}⚡ 离线 · 显示本地缓存${app.pending ? ` · ${app.pending} 项修改待同步` : ''}`;
+  else if (app.pending) text = `${demo}⟳ 正在同步 ${app.pending} 项修改…`;
+  else if (app.error) text = `${demo}⚠ ${app.error}`;
+  else if (app.demo) text = '示例模式 · 非真实数据';
   else if (!app.connected) text = '未登录 Google';
   else text = `${app.account || '已登录'}${app.lastSync ? ` · 同步于 ${timeFmt.format(new Date(app.lastSync))}` : ''}`;
   $('#status-text').textContent = text;
@@ -192,7 +215,7 @@ function renderAgenda() {
   // 当天到期的任务排在日程后面，可直接勾选完成。
   const taskRows = [];
   for (const task of dayTasks) {
-    const row = el('div', `agenda-item agenda-task${task.completed ? ' done' : ''}`);
+    const row = el('div', `agenda-item agenda-task${task.completed ? ' done' : ''}${task.pending ? ' pending' : ''}`);
     const check = checkButton(task, row);
     const body = el('button', 'a-body');
     body.append(el('span', 'a-title', task.title), el('span', 'a-meta', task.listTitle));
@@ -203,6 +226,7 @@ function renderAgenda() {
   const now = Date.now();
   for (const e of list) {
     const item = el('button', 'agenda-item');
+    item.classList.toggle('pending', Boolean(e.pending));
     item.style.setProperty('--c', e.color);
     const time = el('span', 'a-time', eventTimeLabel(e, selected));
     const body = el('span', 'a-body');
@@ -222,11 +246,11 @@ function renderDay(scroll = false) {
   const allday = $('#allday'); allday.replaceChildren();
   allday.hidden = !allDayEvents.length && !dueTasks.length;
   for (const e of allDayEvents) {
-    const chip = el('button', 'chip', e.title); chip.style.setProperty('--c', e.color); chip.title = e.title;
+    const chip = el('button', `chip${e.pending ? ' pending' : ''}`, e.title); chip.style.setProperty('--c', e.color); chip.title = e.title;
     chip.addEventListener('click', () => openEvent(e)); allday.append(chip);
   }
   for (const t of dueTasks) {
-    const chip = el('button', `chip task-chip${t.completed ? ' done' : ''}`, `✓ ${t.title}`); chip.title = t.title;
+    const chip = el('button', `chip task-chip${t.completed ? ' done' : ''}${t.pending ? ' pending' : ''}`, `✓ ${t.title}`); chip.title = t.title;
     chip.addEventListener('click', () => openTask(t)); allday.append(chip);
   }
 
@@ -303,6 +327,7 @@ function renderWeek(scroll = false) {
     bar.classList.toggle('before', s.before);
     bar.classList.toggle('after', s.after);
     bar.classList.toggle('done', Boolean(item.task?.completed));
+    bar.classList.toggle('pending', Boolean(item.pending || item.task?.pending));
     bar.style.left = colLeft(s.start);
     bar.style.width = colWidth(s.span, 3);
     bar.style.top = `${s.row * 22 + 2}px`;
@@ -372,7 +397,7 @@ function renderTasks() {
   const box = $('#task-list'); box.replaceChildren();
   if (!filtered.length) { box.append(el('p', 'empty', taskFilter === 'selected' ? '这一天没有任务' : open.length ? '这里没有待办' : '所有任务都完成了 🎉')); return; }
   for (const task of filtered) {
-    const row = el('div', `task${task.completed ? ' done' : ''}`);
+    const row = el('div', `task${task.completed ? ' done' : ''}${task.pending ? ' pending' : ''}`);
     const check = checkButton(task, row);
     const body = el('button', 'task-body');
     body.append(el('span', 't-title', task.title), el('span', 't-meta', `${task.listTitle}${task.notes ? ' · 有备注' : ''}`));
@@ -572,6 +597,9 @@ function bind() {
 
   desk.onStateChanged(() => refreshState().catch(report));
   desk.onRefresh(() => load(true));
+  desk.onDataChanged(() => reloadFromCache());
+  // 系统报告网络恢复时立即尝试补传
+  window.addEventListener('online', () => desk.syncNow().then(() => load(true)).catch(report));
   // 每 30 秒更新当前时间线；跨过零点时若正在看“今天”则跟随到新的一天。
   let lastToday = todayKey();
   setInterval(() => {
@@ -594,7 +622,7 @@ async function updatePrefs(value) {
 (async function start() {
   bind();
   try {
-    await refreshState();
+    await refreshState(true);
     await load(true);
     scrollToFocus();
   } catch (error) { report(error); }

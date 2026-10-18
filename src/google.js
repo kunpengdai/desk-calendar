@@ -17,6 +17,23 @@ class AuthError extends Error {
   constructor(message) { super(message); this.name = 'AuthError'; }
 }
 
+// 连不上 Google（断网、超时、连接被重置、服务器 5xx / 限流）：可以稍后重试的错误。
+class NetworkError extends Error {
+  constructor(message, cause) { super(message); this.name = 'NetworkError'; this.cause = cause; }
+}
+
+async function safeFetch(fetchImpl, url, options) {
+  try { return await fetchImpl(url, options); }
+  catch (error) { throw new NetworkError('无法连接 Google，请检查网络。', error); }
+}
+
+function httpError(status, message) {
+  if (status >= 500 || status === 429) return new NetworkError(`Google 服务暂时不可用（${status}），稍后重试。`);
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
 function parseClientFile(text) {
   let json;
   try { json = JSON.parse(text); } catch { throw new Error('不是有效的 JSON 文件。'); }
@@ -86,14 +103,14 @@ function authorize({ client, openUrl, fetchImpl = fetch, signal, timeoutMs = 5 *
 }
 
 async function tokenRequest(fetchImpl, body) {
-  const res = await fetchImpl(TOKEN_URL, {
+  const res = await safeFetch(fetchImpl, TOKEN_URL, {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(body).toString(),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (data.error === 'invalid_grant') throw new AuthError('Google 授权已过期或被撤销，请重新登录。');
-    throw new Error(`获取令牌失败：${data.error_description || data.error || res.status}`);
+    throw httpError(res.status, `获取令牌失败：${data.error_description || data.error || res.status}`);
   }
   return { access_token: data.access_token, refresh_token: data.refresh_token, scope: data.scope, expires_at: Date.now() + (data.expires_in || 3600) * 1000 };
 }
@@ -193,7 +210,7 @@ class GoogleClient {
 
   async request(url, options = {}, retried = false) {
     const token = await this.accessToken(retried);
-    const res = await this.fetchImpl(url, {
+    const res = await safeFetch(this.fetchImpl, url, {
       ...options,
       headers: { Authorization: `Bearer ${token}`, ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers },
       signal: AbortSignal.timeout(20_000),
@@ -207,7 +224,7 @@ class GoogleClient {
         throw new Error('需要重新登录 Google 以授予编辑日程的权限：设置 → 退出登录 → 登录 Google。');
       }
       if (res.status === 403 && reason === 'forbidden') throw new Error('没有修改这个日历的权限（只读日历）。');
-      throw new Error(`Google 接口错误（${res.status}）：${data.error?.message || res.statusText}`);
+      throw httpError(res.status, `Google 接口错误（${res.status}）：${data.error?.message || res.statusText}`);
     }
     return data;
   }
@@ -338,4 +355,4 @@ class GoogleClient {
   }
 }
 
-module.exports = { SCOPES, EVENTS_SCOPE, eventResource, AuthError, GoogleClient, authorize, parseClientFile, normalizeEvent, normalizeTask, sortTasks, splitNotes, joinNotes };
+module.exports = { SCOPES, EVENTS_SCOPE, eventResource, AuthError, NetworkError, GoogleClient, authorize, parseClientFile, normalizeEvent, normalizeTask, sortTasks, splitNotes, joinNotes };
