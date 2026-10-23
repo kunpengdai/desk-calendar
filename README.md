@@ -2,6 +2,39 @@
 
 Windows 桌面小组件：在桌面上显示 **Google 日历**（月视图 / 周视图 / 日视图）和 **Google Tasks**。
 
+**下载**：到 [Releases](../../releases/latest) 下载 `DeskCalendar-x.y.z.exe`，双击即可运行（便携版，免安装）。
+
+## 截图
+
+<table>
+  <tr>
+    <td align="center"><b>月视图</b><br><sub>彩色圆点表示日程，空心圆表示任务；下方列出所选日期的日程和任务完成情况</sub></td>
+    <td align="center"><b>日视图</b><br><sub>24 小时时间轴，重叠日程并排；带时间的任务也在时间轴上</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/month.png" width="360" alt="月视图"></td>
+    <td><img src="docs/screenshots/day.png" width="360" alt="日视图"></td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2"><b>周视图</b><br><sub>农历日期、跨天日程长条（延续到下周带箭头）、已完成任务虚线划掉</sub></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><img src="docs/screenshots/week.png" width="600" alt="周视图"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>新建日程</b><br><sub>在空白时间段拖出一段时间，自动填好开始和结束</sub></td>
+    <td align="center"><b>离线模式</b><br><sub>断网时照常修改，带 ⟳ 的条目会在网络恢复后自动同步</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/editor.png" width="360" alt="新建日程"></td>
+    <td><img src="docs/screenshots/offline.png" width="360" alt="离线模式"></td>
+  </tr>
+</table>
+
+> 截图为示例模式（`npm run demo`）中的示例数据。重新生成截图：`npm run screenshots`。
+
+## 功能
+
 - **月视图**：6 周月历，日程用彩色圆点标出（颜色和 Google 日历一致），绿色空心圆表示当天有到期任务；点击日期，下方列出当天日程；双击日期进入日视图。
 - **周视图**：周一到周日 7 列时间网格，表头显示日期和农历（初一显示月份）；跨天的全天日程画成横跨多天的长条，延续到下周的带箭头；当天到期的任务也显示在全天栏；当前时间线画在今天那一列；点击表头的日期进入那天的日视图。切换到周视图时，窗口太窄会自动加宽到 600px。
 - **日视图**：24 小时时间轴；时间重叠的日程并排显示；顶部一行显示全天日程和当天到期的任务；看今天时有一条红色的当前时间线。

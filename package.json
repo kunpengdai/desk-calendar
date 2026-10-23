@@ -8,6 +8,7 @@
     "start": "electron .",
     "demo": "electron . --demo",
     "smoke": "electron . --demo --smoke",
+    "screenshots": "electron . --demo --screenshots",
     "test": "node --test test/",
     "build": "electron-builder --win portable --x64"
   },

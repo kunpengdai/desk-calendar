@@ -8,6 +8,7 @@ const { DataStore } = require('./store');
 
 const DEMO = process.argv.includes('--demo');
 const SMOKE = process.argv.includes('--smoke');
+const SHOTS = DEMO && process.argv.includes('--screenshots'); // 生成 README 截图
 const REFRESH_MS = 5 * 60 * 1000;
 const RETRY_MS = 30 * 1000; // 离线或有待同步修改时，每 30 秒检查一次网络
 // 示例模式使用独立的临时配置目录，不读写真实账号数据。
@@ -338,7 +339,7 @@ async function createWindow() {
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', e => e.preventDefault());
-  if (SMOKE) win.webContents.on('console-message', ({ level, message, lineNumber, sourceId }) => {
+  if (SMOKE || SHOTS) win.webContents.on('console-message', ({ level, message, lineNumber, sourceId }) => {
     if (level === 'error' || level === 'warning') console.error(`[renderer ${level}] ${message} (${path.basename(sourceId || '')}:${lineNumber})`);
   });
   win.on('close', e => { if (!quitting) { e.preventDefault(); win.hide(); } });
@@ -352,7 +353,7 @@ async function createWindow() {
   applyPrefs();
 
   await win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  if (!SMOKE) win.show(); else win.showInactive();
+  if (!SMOKE && !SHOTS) win.show(); else win.showInactive();
 
   refreshTimer = setInterval(() => notifyRenderer('refresh'), REFRESH_MS);
   powerMonitor.on('resume', () => { store.checkConnection(); notifyRenderer('refresh'); });
@@ -360,14 +361,79 @@ async function createWindow() {
   retryTimer = setInterval(() => { const s = store.status(); if (s.offline || s.pending) store.checkConnection(); }, RETRY_MS);
   if (store.status().pending) store.checkConnection();
   if (SMOKE) runSmoke();
+  else if (SHOTS) runScreenshots();
 }
 
 // ---------- 冒烟测试（示例模式下驱动真实界面并截图） ----------
+// ---------- README 截图（示例数据，干净状态） ----------
+async function runScreenshots() {
+  const out = path.join(__dirname, '..', 'docs', 'screenshots');
+  fs.mkdirSync(out, { recursive: true });
+  const js = code => win.webContents.executeJavaScript(code);
+  const snap = async name => {
+    await js(`document.querySelector('#toast').hidden = true; new Promise(r => setTimeout(r, 150))`);
+    fs.writeFileSync(path.join(out, name), (await win.webContents.capturePage()).toPNG());
+    console.log('saved', name);
+  };
+  const size = (width, height) => { win.setContentSize(width, height); return js('new Promise(r => setTimeout(r, 300))'); };
+  try {
+    await js(`new Promise(r => { const t = setInterval(() => { if (document.querySelectorAll('.task').length) { clearInterval(t); r(); } }, 100); })`);
+    await size(420, 820);
+    await js(`document.querySelector('[data-view=month]').click(); document.querySelector('#today').click(); new Promise(r => setTimeout(r, 300))`);
+    await snap('month.png');
+
+    await js(`document.querySelector('[data-view=week]').click(); new Promise(r => setTimeout(r, 400))`);
+    await size(680, 820);
+    await js(`document.querySelector('#wk-scroll').scrollTop = 8.5 * 48; new Promise(r => setTimeout(r, 200))`);
+    await snap('week.png');
+
+    await size(420, 820);
+    await js(`document.querySelector('[data-view=day]').click(); new Promise(r => setTimeout(r, 400))`);
+    await js(`document.querySelector('#timeline-scroll').scrollTop = 8.6 * 48; new Promise(r => setTimeout(r, 200))`);
+    await snap('day.png');
+
+    // 在日视图空白处拖出 14:00–15:30，打开新建日程
+    await js(`(async () => {
+      const g = document.querySelector('#timeline'); document.querySelector('#timeline-scroll').scrollTop = 12.6 * 48;
+      await new Promise(r => setTimeout(r, 150));
+      const top = () => g.getBoundingClientRect().top, x = g.getBoundingClientRect().left + 220;
+      const fire = (t, type, y) => t.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: x, clientY: top() + y, button: 0 }));
+      fire(g, 'pointerdown', 14 * 48 + 2); fire(window, 'pointermove', 15 * 48); fire(window, 'pointermove', 15.5 * 48); fire(window, 'pointerup', 15.5 * 48);
+      await new Promise(r => setTimeout(r, 300));
+      document.querySelector('#ev-title').value = '和朋友喝咖啡';
+      document.querySelector('#ev-location').value = '街角咖啡馆';
+    })()`);
+    await snap('editor.png');
+    await js(`document.querySelector('#ev-cancel').click()`);
+
+    // 离线：勾选一个任务并拖动一个日程，显示“待同步”
+    await js(`(async () => {
+      await desk.debugOffline(true);
+      document.querySelector('#timeline-scroll').scrollTop = 8.6 * 48;
+      const row = [...document.querySelectorAll('.task')].find(r => r.textContent.includes('买牛奶'));
+      row.querySelector('.check').click(); await new Promise(r => setTimeout(r, 300));
+      const b = [...document.querySelectorAll('#timeline .block')].find(x => x.textContent.includes('晨会'));
+      const r = b.getBoundingClientRect(), fire = (t, type, y) => t.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: r.left + 20, clientY: y, button: 0 }));
+      fire(b, 'pointerdown', r.top + 5); fire(window, 'pointermove', r.top + 40); fire(window, 'pointermove', r.top + 77); fire(window, 'pointerup', r.top + 77);
+      await new Promise(r => setTimeout(r, 500));
+      document.querySelector('#timeline-scroll').scrollTop = 8.6 * 48;
+    })()`);
+    await snap('offline.png');
+    await js(`desk.debugOffline(false)`);
+
+    app.exit(0);
+  } catch (error) { console.error('SCREENSHOTS FAIL:', error.message); app.exit(1); }
+}
+
 async function runSmoke() {
   const out = path.join(__dirname, '..', 'artifacts');
   fs.mkdirSync(out, { recursive: true });
   const js = code => win.webContents.executeJavaScript(code);
-  const snap = async name => fs.writeFileSync(path.join(out, name), (await win.webContents.capturePage()).toPNG());
+  // 截图前隐藏提示条，截图用于 README
+  const snap = async name => {
+    await win.webContents.executeJavaScript(`document.querySelector('#toast').hidden = true; new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))`);
+    fs.writeFileSync(path.join(out, name), (await win.webContents.capturePage()).toPNG());
+  };
   try {
     const result = await js(`(async () => {
       const wait = ms => new Promise(r => setTimeout(r, ms));
