@@ -3,9 +3,30 @@ const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 
 const HOUR = 48; // 日视图每小时的高度（px）
-const timeFmt = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
-const longFmt = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' });
-const weekdayFmt = new Intl.DateTimeFormat('zh-CN', { weekday: 'short' });
+const tr = window.I18N.t;
+const isZh = () => window.I18N.getLang() === 'zh';
+
+// 日期格式随语言变化，切换语言时重新创建
+let timeFmt, longFmt, weekdayFmt, dayFmt, monthFmt, monthDayFmt;
+function setupFormats() {
+  const loc = window.I18N.locale();
+  timeFmt = new Intl.DateTimeFormat(loc, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  longFmt = new Intl.DateTimeFormat(loc, { month: 'long', day: 'numeric', weekday: 'long' });
+  weekdayFmt = new Intl.DateTimeFormat(loc, { weekday: 'short' });
+  dayFmt = new Intl.DateTimeFormat(loc, { month: 'short', day: 'numeric', weekday: 'short' });   // 10月23日周五 / Fri, Oct 23
+  monthFmt = new Intl.DateTimeFormat(loc, { year: 'numeric', month: isZh() ? 'long' : 'short' }); // 2026年10月 / Oct 2026
+  monthDayFmt = new Intl.DateTimeFormat(loc, { month: 'short', day: 'numeric' });                // 10月19日 / Oct 19
+}
+
+// 切换语言：填入静态文案、重建日期格式、月视图星期表头
+function applyLanguage(lang) {
+  window.I18N.setLang(lang);
+  window.I18N.applyDom(document);
+  setupFormats();
+  const monday = weekDays('2026-10-19')[0];
+  $('#weekdays').replaceChildren(...Array.from({ length: 7 }, (_, i) => el('span', null,
+    isZh() ? weekdayFmt.format(addDays(monday, i)).replace('周', '') : weekdayFmt.format(addDays(monday, i)))));
+}
 
 let app = null;              // 主进程状态
 let view = 'month';
@@ -19,7 +40,7 @@ let loadToken = 0, toastTimer;
 async function call(promise) { const r = await promise; if (!r.ok) throw new Error(r.error); return r.data; }
 function el(tag, className, text) { const n = document.createElement(tag); if (className) n.className = className; if (text != null) n.textContent = text; return n; }
 function toast(message) { const t = $('#toast'); t.textContent = message; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 3500); }
-const report = error => toast(error.message || '操作失败');
+const report = error => toast(error.message || tr('err.generic'));
 const todayKey = () => dayKey(new Date());
 const shortDate = key => { const d = parseKey(key); return `${d.getMonth() + 1}/${d.getDate()}`; };
 
@@ -58,22 +79,22 @@ function decorateBlock(block, item, key, col) {
 
 function eventTimeLabel(event, key) {
   if (event.task) return `⏰ ${event.task.time}`;
-  if (event.allDay) return '全天';
+  if (event.allDay) return tr('time.allDay');
   const s = new Date(event.start), e = new Date(event.end);
-  const from = dayKey(s) === key ? timeFmt.format(s) : '前日';
-  const to = dayKey(e) === key || (e - parseKey(key)) === 864e5 ? timeFmt.format(e) : '次日';
+  const from = dayKey(s) === key ? timeFmt.format(s) : tr('time.prevDay');
+  const to = dayKey(e) === key || (e - parseKey(key)) === 864e5 ? timeFmt.format(e) : tr('time.nextDay');
   return `${from} – ${to}`;
 }
 
 function dueLabel(due, time) {
-  if (!due) return { text: '无日期', cls: '' };
+  if (!due) return { text: tr('due.none'), cls: '' };
   const t = todayKey(), at = time ? ` ${time}` : '';
-  if (due < t) return { text: `逾期 · ${shortDate(due)}${at}`, cls: 'overdue' };
+  if (due < t) return { text: tr('due.overdue', { date: `${shortDate(due)}${at}` }), cls: 'overdue' };
   if (due === t) {
     const late = time && time < timeFmt.format(new Date());
-    return { text: `今天${at}`, cls: late ? 'overdue' : 'today' };
+    return { text: `${tr('due.today')}${at}`, cls: late ? 'overdue' : 'today' };
   }
-  if (due === dayKey(addDays(new Date(), 1))) return { text: `明天${at}`, cls: '' };
+  if (due === dayKey(addDays(new Date(), 1))) return { text: `${tr('due.tomorrow')}${at}`, cls: '' };
   return { text: `${shortDate(due)}${at}`, cls: '' };
 }
 
@@ -105,7 +126,13 @@ async function load(force = false) {
   render();
 }
 
-async function refreshState(initial = false) { app = await call(desk.state()); if (initial) view = app.prefs.view; renderChrome(); }
+async function refreshState(initial = false) {
+  app = await call(desk.state());
+  if (initial) view = app.prefs.view;
+  // 语言变化（设置里切换或跟随系统）：重新填文案并重绘
+  if (initial || app.lang !== window.I18N.getLang()) { applyLanguage(app.lang); if (!initial) render(); }
+  renderChrome();
+}
 
 // 后台补传完成（离线新建的条目换成了真实 ID 等）：从本地缓存重新读取并重绘
 async function reloadFromCache() {
@@ -136,15 +163,15 @@ function render() {
 
 function renderChrome() {
   const now = new Date();
-  $('#today-label').textContent = `${now.getMonth() + 1}月${now.getDate()}日 ${weekdayFmt.format(now)}`;
+  $('#today-label').textContent = dayFmt.format(now);
   const d = parseKey(selected);
   const week = weekDays(selected), [w0, w6] = [week[0], week[6]];
-  $('#title').textContent = view === 'month' ? `${d.getFullYear()}年${d.getMonth() + 1}月`
-    : view === 'week' ? `${w0.getMonth() + 1}月${w0.getDate()}日 – ${w6.getMonth() !== w0.getMonth() ? `${w6.getMonth() + 1}月` : ''}${w6.getDate()}日`
-    : `${d.getMonth() + 1}月${d.getDate()}日 ${weekdayFmt.format(d)}`;
-  const labels = { month: ['上个月', '下个月'], week: ['上一周', '下一周'], day: ['前一天', '后一天'] }[view];
-  $('#prev').setAttribute('aria-label', labels[0]);
-  $('#next').setAttribute('aria-label', labels[1]);
+  // 周标题：同月只写一次月份（10月19日 – 25日 / Oct 19 – 25）
+  const weekEnd = w6.getMonth() !== w0.getMonth() ? monthDayFmt.format(w6) : isZh() ? `${w6.getDate()}日` : String(w6.getDate());
+  $('#title').textContent = view === 'month' ? monthFmt.format(d) : view === 'week' ? `${monthDayFmt.format(w0)} – ${weekEnd}` : dayFmt.format(d);
+  const labels = { month: ['nav.prevMonth', 'nav.nextMonth'], week: ['nav.prevWeek', 'nav.nextWeek'], day: ['nav.prevDay', 'nav.nextDay'] }[view];
+  $('#prev').setAttribute('aria-label', tr(labels[0]));
+  $('#next').setAttribute('aria-label', tr(labels[1]));
   $$('[data-view]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === view)));
   if (!app) return;
   const p = app.prefs;
@@ -152,26 +179,27 @@ function renderChrome() {
   $('#pref-pinned').checked = p.pinned;
   $('#pref-autostart').checked = p.autoStart;
   $('#pref-opacity').value = p.opacity;
+  $('#pref-lang').value = p.lang || 'auto';
   $('#opacity-out').textContent = `${p.opacity}%`;
   $('#tasks').classList.toggle('collapsed', p.tasksCollapsed);
   $('#tasks-toggle').setAttribute('aria-expanded', String(!p.tasksCollapsed));
 
   let text;
-  const demo = app.demo ? '示例模式 · ' : '';
-  if (app.authorizing) text = '请在浏览器中完成 Google 登录…';
-  else if (app.offline) text = `${demo}⚡ 离线 · 显示本地缓存${app.pending ? ` · ${app.pending} 项修改待同步` : ''}`;
-  else if (app.pending) text = `${demo}⟳ 正在同步 ${app.pending} 项修改…`;
+  const demo = app.demo ? tr('status.demoPrefix') : '';
+  if (app.authorizing) text = tr('status.authorizing');
+  else if (app.offline) text = `${demo}${tr('status.offline')}${app.pending ? tr('status.offlinePending', { n: app.pending }) : ''}`;
+  else if (app.pending) text = `${demo}${tr('status.syncing', { n: app.pending })}`;
   else if (app.error) text = `${demo}⚠ ${app.error}`;
-  else if (app.demo) text = '示例模式 · 非真实数据';
-  else if (!app.connected) text = '未登录 Google';
-  else text = `${app.account || '已登录'}${app.lastSync ? ` · 同步于 ${timeFmt.format(new Date(app.lastSync))}` : ''}`;
+  else if (app.demo) text = tr('status.demo');
+  else if (!app.connected) text = tr('status.signedOut');
+  else text = `${app.account || tr('status.signedIn')}${app.lastSync ? tr('status.synced', { time: timeFmt.format(new Date(app.lastSync)) }) : ''}`;
   $('#status-text').textContent = text;
   $('#status-text').title = text;
   $('#status-text').classList.toggle('error', Boolean(app.error));
 
-  $('#account-status').textContent = app.demo ? '示例模式不会连接真实账号。' : app.connected ? `已登录：${app.account || 'Google 账号'}` : app.hasClient ? '已导入客户端，点击“登录 Google”。' : '尚未设置。按以下步骤创建你自己的 OAuth 客户端（约 5 分钟）：';
+  $('#account-status').textContent = app.demo ? tr('account.demo') : app.connected ? tr('account.signedIn', { account: app.account || tr('account.googleAccount') }) : app.hasClient ? tr('account.hasClient') : tr('account.setup');
   $('#setup-steps').hidden = app.connected;
-  $('#import-btn').textContent = app.hasClient ? '更换客户端 JSON' : '导入客户端 JSON';
+  $('#import-btn').textContent = tr(app.hasClient ? 'btn.importChange' : 'btn.import');
   $('#import-btn').hidden = app.demo;
   $('#connect-btn').hidden = app.connected || app.authorizing;
   $('#connect-btn').disabled = !app.hasClient;
@@ -208,10 +236,10 @@ function renderAgenda() {
   const list = eventsOn(events, selected);
   const dayTasks = sortTasks(tasksOn(selected));
   const doneCount = dayTasks.filter(t => t.completed).length;
-  $('#agenda-title').textContent = selected === todayKey() ? '今天' : longFmt.format(parseKey(selected));
-  $('#agenda-count').textContent = [list.length && `${list.length} 项日程`, dayTasks.length && `任务 ${doneCount}/${dayTasks.length} 完成`].filter(Boolean).join(' · ');
+  $('#agenda-title').textContent = selected === todayKey() ? tr('agenda.today') : longFmt.format(parseKey(selected));
+  $('#agenda-count').textContent = [list.length && tr('agenda.events', { n: list.length }), dayTasks.length && tr('agenda.tasksDone', { done: doneCount, total: dayTasks.length })].filter(Boolean).join(' · ');
   const box = $('#agenda-list'); box.replaceChildren();
-  if (!list.length && !dayTasks.length) { box.append(el('p', 'empty', '这一天没有日程')); return; }
+  if (!list.length && !dayTasks.length) { box.append(el('p', 'empty', tr('agenda.empty'))); return; }
   // 当天到期的任务排在日程后面，可直接勾选完成。
   const taskRows = [];
   for (const task of dayTasks) {
@@ -220,7 +248,7 @@ function renderAgenda() {
     const body = el('button', 'a-body');
     body.append(el('span', 'a-title', task.title), el('span', 'a-meta', task.listTitle));
     body.addEventListener('click', () => openTask(task));
-    row.append(el('span', 'a-time', task.time ? `⏰ ${task.time}` : '任务'), check, body);
+    row.append(el('span', 'a-time', task.time ? `⏰ ${task.time}` : tr('agenda.task')), check, body);
     taskRows.push(row);
   }
   const now = Date.now();
@@ -233,7 +261,7 @@ function renderAgenda() {
     body.append(el('span', 'a-title', e.title));
     if (e.location) body.append(el('span', 'a-meta', e.location));
     item.append(time, body);
-    if (!e.allDay && new Date(e.start) <= now && new Date(e.end) > now) item.append(el('span', 'live', '进行中'));
+    if (!e.allDay && new Date(e.start) <= now && new Date(e.end) > now) item.append(el('span', 'live', tr('live')));
     item.addEventListener('click', () => openEvent(e));
     box.append(item);
   }
@@ -304,9 +332,10 @@ function renderWeek(scroll = false) {
     cell.classList.toggle('today', keys[i] === today);
     cell.classList.toggle('selected', keys[i] === selected);
     cell.classList.toggle('weekend', i >= 5);
-    cell.setAttribute('aria-label', `${longFmt.format(date)}，打开日视图`);
-    const lunar = lunarLabel(date);
-    cell.append(el('span', 'wk-dow', weekdayFmt.format(date).replace('周', '')), el('span', 'wk-num', date.getDate()), el('span', `wk-lunar${lunar.endsWith('月') ? ' month' : ''}`, lunar));
+    cell.setAttribute('aria-label', tr('week.openDay', { date: longFmt.format(date) }));
+    // 农历只在中文界面显示
+    const lunar = isZh() ? lunarLabel(date) : '';
+    cell.append(el('span', 'wk-dow', isZh() ? weekdayFmt.format(date).replace('周', '') : weekdayFmt.format(date)), el('span', 'wk-num', date.getDate()), el('span', `wk-lunar${lunar.endsWith('月') ? ' month' : ''}`, lunar));
     cell.addEventListener('click', () => { select(keys[i]); setView('day'); });
     head.append(cell);
   });
@@ -393,18 +422,18 @@ function renderTasks() {
     : open.filter(task => taskFilter === 'all' || (task.due && task.due <= t));
   $('#tasks-count').textContent = tasks.filter(task => !task.completed).length || '';
   $$('[data-filter]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.filter === taskFilter)));
-  $('[data-filter=selected]').textContent = selected === t ? '所选日期（今天）' : `所选日期（${shortDate(selected)}）`;
+  $('[data-filter=selected]').textContent = selected === t ? tr('tasks.selectedToday') : tr('tasks.selectedDate', { date: shortDate(selected) });
   const box = $('#task-list'); box.replaceChildren();
-  if (!filtered.length) { box.append(el('p', 'empty', taskFilter === 'selected' ? '这一天没有任务' : open.length ? '这里没有待办' : '所有任务都完成了 🎉')); return; }
+  if (!filtered.length) { box.append(el('p', 'empty', tr(taskFilter === 'selected' ? 'tasks.emptyDay' : open.length ? 'tasks.emptyFilter' : 'tasks.allDone'))); return; }
   for (const task of filtered) {
     const row = el('div', `task${task.completed ? ' done' : ''}${task.pending ? ' pending' : ''}`);
     const check = checkButton(task, row);
     const body = el('button', 'task-body');
-    body.append(el('span', 't-title', task.title), el('span', 't-meta', `${task.listTitle}${task.notes ? ' · 有备注' : ''}`));
+    body.append(el('span', 't-title', task.title), el('span', 't-meta', `${task.listTitle}${task.notes ? tr('tasks.hasNotes') : ''}`));
     body.addEventListener('click', () => openTask(task));
-    const due = task.completed ? { text: '已完成', cls: 'done' } : dueLabel(task.due, task.time);
-    const del = el('button', 't-del', '🗑'); del.title = '删除任务'; del.setAttribute('aria-label', `删除任务：${task.title}`);
-    del.addEventListener('click', () => confirmThen(del, '删除?', () => removeTask(task)));
+    const due = task.completed ? { text: tr('tasks.done'), cls: 'done' } : dueLabel(task.due, task.time);
+    const del = el('button', 't-del', '🗑'); del.title = tr('tasks.delete'); del.setAttribute('aria-label', tr('tasks.deleteAria', { title: task.title }));
+    del.addEventListener('click', () => confirmThen(del, tr('tasks.confirmShort'), () => removeTask(task)));
     row.append(check, body, el('span', `t-due ${due.cls}`, due.text), del);
     box.append(row);
   }
@@ -446,7 +475,7 @@ function step(direction) {
 // 勾选框：未完成 → 完成；已完成 → 恢复为未完成。
 function checkButton(task, row) {
   const check = el('button', 'check');
-  check.title = task.completed ? '恢复为未完成' : '标记完成';
+  check.title = tr(task.completed ? 'tasks.reopen' : 'tasks.markDone');
   check.setAttribute('aria-label', `${check.title}：${task.title}`);
   check.addEventListener('click', () => toggleTask(task, row));
   return check;
@@ -466,7 +495,7 @@ async function removeTask(task) {
     tasks = tasks.filter(t => t.id !== task.id && t.parent !== task.id);
     recentlyDone.delete(task.id);
     render();
-    toast(`已删除任务：${task.title}`);
+    toast(tr('toast.taskDeleted', { title: task.title }));
   } catch (error) { report(error); }
 }
 
@@ -479,7 +508,7 @@ async function toggleTask(task, row) {
     tasks = tasks.map(t => (t.id === task.id ? { ...t, completed: done, completedAt } : t));
     if (done) recentlyDone.add(task.id); else recentlyDone.delete(task.id);
     render();
-    toast(done ? `已完成：${task.title}` : `已恢复为未完成：${task.title}`);
+    toast(tr(done ? 'toast.taskDone' : 'toast.taskReopened', { title: task.title }));
   } catch (error) { row?.classList.toggle('done', !done); report(error); }
 }
 
@@ -494,7 +523,7 @@ function openDetail({ kind, title, time, meta, notes, link, task, event }) {
   $('#detail-open').hidden = !link;
   detailAction = link;
   $('#detail-complete').hidden = !task;
-  $('#detail-complete').textContent = task?.completed ? '恢复为未完成' : '标记完成';
+  $('#detail-complete').textContent = tr(task?.completed ? 'detail.reopen' : 'detail.complete');
   $('#detail-complete').onclick = task ? () => { $('#detail').close(); toggleTask(task, null); } : null;
   // 日程：可写日历显示“编辑 / 删除”（逻辑在 editing.js）
   detailEvent = event || null;
@@ -502,9 +531,9 @@ function openDetail({ kind, title, time, meta, notes, link, task, event }) {
   detailTask = task || null;
   $('#detail-edit').hidden = !editable;
   $('#detail-delete').hidden = !editable && !task;   // 任务总是可以删除
-  $('#detail-delete').textContent = '删除';
+  $('#detail-delete').textContent = tr('detail.delete');
   $('#detail-delete').classList.remove('confirm');
-  const note = event && !event.editable ? '只读日历，不能修改。' : event?.editable && !app?.canEdit ? '要编辑日程，请在设置中退出并重新登录 Google，授予编辑权限。' : event?.recurring ? '这是重复日程中的一次，编辑或删除只影响这一次。' : '';
+  const note = event && !event.editable ? tr('note.readOnly') : event?.editable && !app?.canEdit ? tr('note.needScope') : event?.recurring ? tr('note.recurring') : '';
   $('#detail-note').textContent = note;
   $('#detail-note').hidden = !note;
   $('#detail-open').className = editable ? 'secondary' : 'primary';
@@ -515,18 +544,18 @@ function openEvent(e) {
   let time;
   if (e.allDay) {
     const last = dayKey(addDays(parseKey(e.endKey), -1));
-    time = last > e.startKey ? `${longFmt.format(parseKey(e.startKey))} – ${longFmt.format(parseKey(last))} · 全天` : `${longFmt.format(parseKey(e.startKey))} · 全天`;
+    time = last > e.startKey ? `${longFmt.format(parseKey(e.startKey))} – ${longFmt.format(parseKey(last))} · ${tr('detail.allDay')}` : `${longFmt.format(parseKey(e.startKey))} · ${tr('detail.allDay')}`;
   } else {
     const s = new Date(e.start), end = new Date(e.end);
     time = dayKey(s) === dayKey(end) ? `${longFmt.format(s)} ${timeFmt.format(s)} – ${timeFmt.format(end)}` : `${longFmt.format(s)} ${timeFmt.format(s)} – ${longFmt.format(end)} ${timeFmt.format(end)}`;
   }
-  openDetail({ kind: '日程', title: e.title, time, meta: [e.location, e.calendar].filter(Boolean).join(' · '), notes: e.description, link: e.link || 'https://calendar.google.com/calendar/r', event: e });
+  openDetail({ kind: tr('kind.event'), title: e.title, time, meta: [e.location, e.calendar].filter(Boolean).join(' · '), notes: e.description, link: e.link || 'https://calendar.google.com/calendar/r', event: e });
 }
 
 function openTask(t) {
-  const due = t.due ? `截止：${longFmt.format(parseKey(t.due))}${t.time ? ` ${t.time}` : ''}` : '未设置截止日期';
-  const done = t.completed && t.completedAt ? `　✓ 完成于 ${longFmt.format(new Date(t.completedAt))} ${timeFmt.format(new Date(t.completedAt))}` : t.completed ? '　✓ 已完成' : '';
-  openDetail({ kind: t.completed ? '任务 · 已完成' : '任务', title: t.title, time: due + done, meta: t.listTitle, notes: t.notes, link: t.link, task: t });
+  const due = t.due ? tr('detail.due', { date: `${longFmt.format(parseKey(t.due))}${t.time ? ` ${t.time}` : ''}` }) : tr('detail.noDue');
+  const done = t.completed && t.completedAt ? `　${tr('detail.completedAt', { date: `${longFmt.format(new Date(t.completedAt))} ${timeFmt.format(new Date(t.completedAt))}` })}` : t.completed ? `　${tr('detail.completed')}` : '';
+  openDetail({ kind: tr(t.completed ? 'kind.taskDone' : 'kind.task'), title: t.title, time: due + done, meta: t.listTitle, notes: t.notes, link: t.link, task: t });
 }
 
 // ---------- 新建任务 ----------
@@ -558,7 +587,7 @@ async function addTask(event) {
     tasks = sortTasks([...tasks, task]);
     $('#nt-title').value = ''; $('#nt-time').value = ''; dateTouched = false;
     render();
-    toast(`已添加：${task.title}${task.due ? `（${shortDate(task.due)}${task.time ? ` ${task.time}` : ''}）` : ''}`);
+    toast(tr('toast.taskAdded', { title: `${task.title}${task.due ? ` (${shortDate(task.due)}${task.time ? ` ${task.time}` : ''})` : ''}` }));
   } catch (error) { report(error); }
   finally { $('#nt-add').disabled = false; $('#nt-title').focus(); }
 }
@@ -586,11 +615,12 @@ function bind() {
   $('#pref-autostart').addEventListener('change', e => updatePrefs({ autoStart: e.target.checked }));
   $('#pref-opacity').addEventListener('input', e => { $('#opacity-out').textContent = `${e.target.value}%`; });
   $('#pref-opacity').addEventListener('change', e => updatePrefs({ opacity: Number(e.target.value) }));
+  $('#pref-lang').addEventListener('change', e => updatePrefs({ lang: e.target.value }).then(() => refreshState()));
 
   $('#import-btn').addEventListener('click', () => authAction(desk.importClient()));
   $('#connect-btn').addEventListener('click', async () => {
     await authAction(desk.connect());
-    if (app.connected) { $('#settings').close(); toast('已登录 Google'); load(true); }
+    if (app.connected) { $('#settings').close(); toast(tr('toast.signedIn')); load(true); }
   });
   $('#cancel-btn').addEventListener('click', () => authAction(desk.cancelConnect()));
   $('#disconnect-btn').addEventListener('click', async () => { await authAction(desk.disconnect()); loadedRange = ''; load(); });

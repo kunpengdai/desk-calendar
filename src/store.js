@@ -4,6 +4,7 @@
 // - 界面看到的数据 = snapshot 叠加 outbox
 // 网络正常时修改直接写入 Google；连不上时进入 outbox，恢复网络后按顺序补传。
 const { parseKey, addDays, dayKey } = require('./renderer/calendar-core');
+const { t } = require('./renderer/i18n');
 
 const isNetworkError = e => e?.name === 'NetworkError';
 const isAuthError = e => e?.name === 'AuthError';
@@ -72,7 +73,7 @@ class DataStore {
 
   persist() {
     try { this.saveFn({ snapshot: this.snapshot, outbox: this.outbox, idMap: this.idMap, seq: this.seq, lastSync: this.lastSync }); }
-    catch (error) { this.error = `无法保存本地缓存：${error.message}`; }
+    catch (error) { this.error = t('err.cacheSave', { message: error.message }); }
   }
 
   status() {
@@ -145,7 +146,7 @@ class DataStore {
   tempId() { this.seq += 1; return `local-${this.now().toString(36)}-${this.seq}`; }
 
   async write(op) {
-    if (!this.client) throw new Error('尚未登录 Google。');
+    if (!this.client) throw new Error(t('err.notSignedIn'));
     // 队列为空时直接写入 Google；队列里还有修改时排在后面，保证顺序
     if (!this.outbox.length && !this.offline) {
       try { const result = await this.runOp(op); this.markOnline(); this.persist(); return result; }
@@ -251,7 +252,7 @@ class DataStore {
         snap.tasks = snap.tasks.filter(t => t.id !== op.taskId && t.parent !== op.taskId);
         return true;
       }
-      default: throw new Error(`未知操作：${op.type}`);
+      default: throw new Error(t('err.unknownOp', { type: op.type }));
     }
   }
 
@@ -271,7 +272,7 @@ class DataStore {
           } catch (error) {
             if (isNetworkError(error)) { this.offline = true; break; }
             if (isAuthError(error)) { this.fail(error); this.flushAgain = false; break; }
-            this.error = `一项离线修改无法同步，已放弃：${error.message}`;
+            this.error = t('err.syncDropped', { message: error.message });
           }
           this.outbox.shift();
           this.persist();

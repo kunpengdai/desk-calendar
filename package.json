@@ -7,8 +7,8 @@
   "scripts": {
     "start": "electron .",
     "demo": "electron . --demo",
-    "smoke": "electron . --demo --smoke",
-    "screenshots": "electron . --demo --screenshots",
+    "smoke": "electron . --demo --smoke --ui-lang=zh",
+    "screenshots": "electron . --demo --screenshots --ui-lang=zh && electron . --demo --screenshots --ui-lang=en",
     "test": "node --test test/",
     "build": "electron-builder --win portable --x64"
   },

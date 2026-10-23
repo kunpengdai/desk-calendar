@@ -7,35 +7,36 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <!-- 文案由 i18n.js 按语言填入：data-i18n（文字）、data-i18n-title、data-i18n-placeholder、data-i18n-aria -->
   <div class="app">
     <header class="titlebar">
       <div class="brand"><span class="logo" aria-hidden="true"></span><span id="today-label"></span></div>
       <div class="win-actions">
-        <button id="refresh-btn" class="icon" title="刷新" aria-label="刷新">↻</button>
-        <button id="pin-btn" class="icon" title="窗口置顶" aria-label="窗口置顶" aria-pressed="false">📌</button>
-        <button id="settings-btn" class="icon" title="设置" aria-label="设置">⚙</button>
-        <button id="hide-btn" class="icon" title="收起到托盘" aria-label="收起到托盘">—</button>
+        <button id="refresh-btn" class="icon" data-i18n-title="btn.refresh" data-i18n-aria="btn.refresh">↻</button>
+        <button id="pin-btn" class="icon" data-i18n-title="btn.pin" data-i18n-aria="btn.pin" aria-pressed="false">📌</button>
+        <button id="settings-btn" class="icon" data-i18n-title="btn.settings" data-i18n-aria="btn.settings">⚙</button>
+        <button id="hide-btn" class="icon" data-i18n-title="btn.hide" data-i18n-aria="btn.hide">—</button>
       </div>
     </header>
 
     <div class="toolbar">
-      <div class="seg" role="group" aria-label="视图">
-        <button data-view="month" aria-pressed="true">月</button>
-        <button data-view="week" aria-pressed="false">周</button>
-        <button data-view="day" aria-pressed="false">日</button>
+      <div class="seg" role="group" data-i18n-aria="view.group">
+        <button data-view="month" aria-pressed="true" data-i18n="view.month"></button>
+        <button data-view="week" aria-pressed="false" data-i18n="view.week"></button>
+        <button data-view="day" aria-pressed="false" data-i18n="view.day"></button>
       </div>
       <h1 id="title"></h1>
       <div class="nav">
-        <button id="new-event-btn" class="icon add-btn" title="新建日程" aria-label="新建日程">＋</button>
-        <button id="today" class="text-btn">今天</button>
-        <button id="prev" class="icon" aria-label="上一个">‹</button>
-        <button id="next" class="icon" aria-label="下一个">›</button>
+        <button id="new-event-btn" class="icon add-btn" data-i18n-title="btn.newEvent" data-i18n-aria="btn.newEvent">＋</button>
+        <button id="today" class="text-btn" data-i18n="btn.today"></button>
+        <button id="prev" class="icon" data-i18n-aria="nav.prev">‹</button>
+        <button id="next" class="icon" data-i18n-aria="nav.next">›</button>
       </div>
     </div>
 
     <main class="main">
       <section id="month-view" class="month-view">
-        <div class="weekdays" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
+        <div id="weekdays" class="weekdays" aria-hidden="true"></div>
         <div id="grid" class="grid"></div>
         <div class="agenda">
           <div class="section-head"><h2 id="agenda-title"></h2><span id="agenda-count" class="muted"></span></div>
@@ -56,9 +57,9 @@
 
       <section id="welcome" class="welcome" hidden>
         <div class="welcome-icon" aria-hidden="true">📅</div>
-        <h2>把 Google 日历放到桌面</h2>
-        <p>登录后即可在这里查看日程和 Google Tasks。</p>
-        <button class="primary" data-open-settings>开始设置</button>
+        <h2 data-i18n="welcome.title"></h2>
+        <p data-i18n="welcome.text"></p>
+        <button class="primary" data-open-settings data-i18n="welcome.start"></button>
       </section>
     </main>
 
@@ -68,97 +69,105 @@
         <span class="chev" aria-hidden="true">▾</span>
       </button>
       <div class="tasks-body">
-        <div class="tasks-filter" role="group" aria-label="任务筛选">
-          <button data-filter="all" aria-pressed="true">全部</button>
-          <button data-filter="today" aria-pressed="false">今天及逾期</button>
-          <button data-filter="selected" aria-pressed="false">所选日期</button>
+        <div class="tasks-filter" role="group" data-i18n-aria="tasks.filter">
+          <button data-filter="all" aria-pressed="true" data-i18n="tasks.all"></button>
+          <button data-filter="today" aria-pressed="false" data-i18n="tasks.todayOverdue"></button>
+          <button data-filter="selected" aria-pressed="false" data-i18n="tasks.selected"></button>
         </div>
         <div id="task-list" class="task-list"></div>
         <form id="new-task" class="new-task" autocomplete="off">
           <div class="nt-row">
             <span class="nt-plus" aria-hidden="true">＋</span>
-            <input id="nt-title" type="text" placeholder="新建任务，回车添加" maxlength="1024" aria-label="任务名称" required>
-            <button id="nt-add" type="submit" class="nt-add">添加</button>
+            <input id="nt-title" type="text" maxlength="1024" data-i18n-placeholder="nt.placeholder" data-i18n-aria="nt.name" required>
+            <button id="nt-add" type="submit" class="nt-add" data-i18n="nt.add"></button>
           </div>
           <div class="nt-row nt-options">
-            <label class="nt-field" title="截止日期"><span>📅</span><input id="nt-date" type="date" aria-label="截止日期"></label>
-            <label class="nt-field" title="完成时间（可选）"><span>⏰</span><input id="nt-time" type="time" aria-label="完成时间"></label>
-            <select id="nt-list" aria-label="任务列表"></select>
+            <label class="nt-field" data-i18n-title="nt.due"><span>📅</span><input id="nt-date" type="date" data-i18n-aria="nt.due"></label>
+            <label class="nt-field" data-i18n-title="nt.time"><span>⏰</span><input id="nt-time" type="time" data-i18n-aria="nt.time"></label>
+            <select id="nt-list" data-i18n-aria="nt.list"></select>
           </div>
         </form>
       </div>
     </section>
 
-    <footer class="status"><span id="status-text"></span><button id="open-gcal" class="text-btn" title="在浏览器打开 Google 日历">打开 Google 日历 ↗</button></footer>
+    <footer class="status"><span id="status-text"></span><button id="open-gcal" class="text-btn" data-i18n-title="footer.openTitle" data-i18n="footer.open"></button></footer>
     <div id="toast" class="toast" role="status" hidden></div>
   </div>
 
   <dialog id="settings">
-    <div class="dialog-head"><h2>设置</h2><button class="icon" id="settings-close" aria-label="关闭">×</button></div>
+    <div class="dialog-head"><h2 data-i18n="settings.title"></h2><button class="icon" id="settings-close" data-i18n-aria="close">×</button></div>
 
     <section class="card">
-      <h3>Google 账号</h3>
+      <h3 data-i18n="settings.account"></h3>
       <p id="account-status" class="muted"></p>
       <div id="setup-steps">
         <ol class="steps">
-          <li>打开 <button class="link" data-url="https://console.cloud.google.com/projectcreate">Google Cloud 控制台</button>，新建一个项目。</li>
-          <li>在 API 库中启用 <button class="link" data-url="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com">Google Calendar API</button> 和 <button class="link" data-url="https://console.cloud.google.com/apis/library/tasks.googleapis.com">Google Tasks API</button>。</li>
-          <li>在 <button class="link" data-url="https://console.cloud.google.com/auth/overview">Google Auth Platform</button> 填写应用名称，受众选“外部”，并把自己的 Gmail 加为测试用户。</li>
-          <li>在“客户端”中创建 OAuth 客户端，类型选 <b>桌面应用</b>，下载 JSON 文件。</li>
-          <li>点击下方“导入客户端 JSON”，再点“登录 Google”。</li>
+          <li><span data-i18n="setup.s1a"></span><button class="link" data-url="https://console.cloud.google.com/projectcreate" data-i18n="setup.cloudConsole"></button><span data-i18n="setup.s1b"></span></li>
+          <li><span data-i18n="setup.s2a"></span><button class="link" data-url="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com">Google Calendar API</button><span data-i18n="setup.s2and"></span><button class="link" data-url="https://console.cloud.google.com/apis/library/tasks.googleapis.com">Google Tasks API</button><span data-i18n="setup.s2b"></span></li>
+          <li><span data-i18n="setup.s3a"></span><button class="link" data-url="https://console.cloud.google.com/auth/overview">Google Auth Platform</button><span data-i18n="setup.s3b"></span></li>
+          <li data-i18n="setup.s4"></li>
+          <li data-i18n="setup.s5"></li>
         </ol>
       </div>
       <div class="row">
-        <button id="import-btn" class="secondary">导入客户端 JSON</button>
-        <button id="connect-btn" class="primary">登录 Google</button>
-        <button id="cancel-btn" class="secondary" hidden>取消</button>
-        <button id="disconnect-btn" class="danger" hidden>退出登录</button>
+        <button id="import-btn" class="secondary" data-i18n="btn.import"></button>
+        <button id="connect-btn" class="primary" data-i18n="btn.connect"></button>
+        <button id="cancel-btn" class="secondary" hidden data-i18n="btn.cancel"></button>
+        <button id="disconnect-btn" class="danger" hidden data-i18n="btn.disconnect"></button>
       </div>
       <p id="auth-error" class="error" role="alert"></p>
     </section>
 
     <section class="card">
-      <h3>窗口</h3>
-      <label class="switch"><span>窗口置顶<small>始终显示在其他窗口上方</small></span><input type="checkbox" id="pref-pinned"></label>
-      <label class="switch"><span>开机启动<small id="autostart-hint">登录 Windows 时自动打开</small></span><input type="checkbox" id="pref-autostart"></label>
-      <label class="slider"><span>不透明度 <output id="opacity-out"></output></span><input type="range" id="pref-opacity" min="40" max="100" step="5"></label>
+      <h3 data-i18n="settings.window"></h3>
+      <label class="switch"><span><span data-i18n="pref.pinned"></span><small data-i18n="pref.pinnedHint"></small></span><input type="checkbox" id="pref-pinned"></label>
+      <label class="switch"><span><span data-i18n="pref.autostart"></span><small id="autostart-hint" data-i18n="pref.autostartHint"></small></span><input type="checkbox" id="pref-autostart"></label>
+      <label class="slider"><span><span data-i18n="pref.opacity"></span> <output id="opacity-out"></output></span><input type="range" id="pref-opacity" min="40" max="100" step="5"></label>
+      <label class="lang-row"><span>语言 / Language</span>
+        <select id="pref-lang">
+          <option value="auto">跟随系统 / System</option>
+          <option value="zh">中文</option>
+          <option value="en">English</option>
+        </select>
+      </label>
     </section>
-    <p class="muted small">可以新建、编辑、删除和拖动日程；任务可以勾选完成。每 5 分钟自动同步。登录信息使用 Windows 加密保存在本机。</p>
+    <p class="muted small" data-i18n="settings.footer"></p>
   </dialog>
 
   <dialog id="detail">
-    <div class="dialog-head"><span id="detail-kind" class="eyebrow"></span><button class="icon" id="detail-close" aria-label="关闭">×</button></div>
+    <div class="dialog-head"><span id="detail-kind" class="eyebrow"></span><button class="icon" id="detail-close" data-i18n-aria="close">×</button></div>
     <h2 id="detail-title"></h2>
     <p id="detail-time" class="detail-time"></p>
     <p id="detail-meta" class="muted"></p>
     <p id="detail-notes" class="detail-notes"></p>
     <p id="detail-note" class="muted small" hidden></p>
     <div class="row">
-      <button id="detail-edit" class="primary" hidden>编辑</button>
-      <button id="detail-open" class="secondary">在 Google 中打开 ↗</button>
-      <button id="detail-complete" class="secondary" hidden>标记完成</button>
-      <button id="detail-delete" class="danger" hidden>删除</button>
+      <button id="detail-edit" class="primary" hidden data-i18n="detail.edit"></button>
+      <button id="detail-open" class="secondary" data-i18n="detail.open"></button>
+      <button id="detail-complete" class="secondary" hidden data-i18n="detail.complete"></button>
+      <button id="detail-delete" class="danger" hidden data-i18n="detail.delete"></button>
     </div>
   </dialog>
 
   <dialog id="editor">
-    <div class="dialog-head"><h2 id="editor-heading">新建日程</h2><button class="icon" id="editor-close" aria-label="关闭">×</button></div>
+    <div class="dialog-head"><h2 id="editor-heading" data-i18n="editor.new"></h2><button class="icon" id="editor-close" data-i18n-aria="close">×</button></div>
     <form id="editor-form" class="editor-form" autocomplete="off">
-      <input id="ev-title" class="field title-field" placeholder="添加标题" maxlength="1024" aria-label="标题" required>
-      <label class="switch compact"><span>全天</span><input type="checkbox" id="ev-allday"></label>
+      <input id="ev-title" class="field title-field" maxlength="1024" data-i18n-placeholder="ev.titlePh" data-i18n-aria="ev.title" required>
+      <label class="switch compact"><span data-i18n="ev.allDay"></span><input type="checkbox" id="ev-allday"></label>
       <div class="ev-times">
-        <span class="ev-label">开始</span><input type="date" id="ev-start-date" aria-label="开始日期" required><input type="time" id="ev-start-time" step="300" aria-label="开始时间">
-        <span class="ev-label">结束</span><input type="date" id="ev-end-date" aria-label="结束日期" required><input type="time" id="ev-end-time" step="300" aria-label="结束时间">
+        <span class="ev-label" data-i18n="ev.start"></span><input type="date" id="ev-start-date" data-i18n-aria="ev.startDate" required><input type="time" id="ev-start-time" step="300" data-i18n-aria="ev.startTime">
+        <span class="ev-label" data-i18n="ev.end"></span><input type="date" id="ev-end-date" data-i18n-aria="ev.endDate" required><input type="time" id="ev-end-time" step="300" data-i18n-aria="ev.endTime">
       </div>
-      <label class="ev-cal"><span class="ev-label">日历</span><select id="ev-calendar" aria-label="日历"></select></label>
-      <input id="ev-location" class="field" placeholder="地点（可选）" maxlength="1000" aria-label="地点">
-      <textarea id="ev-description" class="field" rows="3" placeholder="说明（可选）" maxlength="8000" aria-label="说明"></textarea>
-      <p id="ev-recurring" class="muted small" hidden>这是重复日程中的一次，修改只影响这一次。</p>
+      <label class="ev-cal"><span class="ev-label" data-i18n="ev.calendar"></span><select id="ev-calendar" data-i18n-aria="ev.calendar"></select></label>
+      <input id="ev-location" class="field" maxlength="1000" data-i18n-placeholder="ev.locationPh" data-i18n-aria="ev.location">
+      <textarea id="ev-description" class="field" rows="3" maxlength="8000" data-i18n-placeholder="ev.descriptionPh" data-i18n-aria="ev.description"></textarea>
+      <p id="ev-recurring" class="muted small" hidden data-i18n="ev.recurring"></p>
       <p id="ev-error" class="error" role="alert"></p>
-      <div class="row"><button type="submit" class="primary" id="ev-save">保存</button><button type="button" class="secondary" id="ev-cancel">取消</button></div>
+      <div class="row"><button type="submit" class="primary" id="ev-save" data-i18n="btn.save"></button><button type="button" class="secondary" id="ev-cancel" data-i18n="btn.cancel"></button></div>
     </form>
   </dialog>
 
+  <script src="i18n.js"></script>
   <script src="calendar-core.js"></script>
   <script src="app.js"></script>
   <script src="editing.js"></script>

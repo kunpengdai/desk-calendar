@@ -1,6 +1,7 @@
 // Google OAuth（桌面应用 + PKCE + 本机回环回调）以及 Calendar / Tasks REST 封装。
 const crypto = require('node:crypto');
 const http = require('node:http');
+const { t } = require('./renderer/i18n');
 
 const SCOPES = [
   'https://www.googleapis.com/auth/calendar.readonly',  // 读取日历列表和日程
@@ -24,11 +25,11 @@ class NetworkError extends Error {
 
 async function safeFetch(fetchImpl, url, options) {
   try { return await fetchImpl(url, options); }
-  catch (error) { throw new NetworkError('无法连接 Google，请检查网络。', error); }
+  catch (error) { throw new NetworkError(t('err.network'), error); }
 }
 
 function httpError(status, message) {
-  if (status >= 500 || status === 429) return new NetworkError(`Google 服务暂时不可用（${status}），稍后重试。`);
+  if (status >= 500 || status === 429) return new NetworkError(t('err.unavailable', { status }));
   const error = new Error(message);
   error.status = status;
   return error;
@@ -36,11 +37,11 @@ function httpError(status, message) {
 
 function parseClientFile(text) {
   let json;
-  try { json = JSON.parse(text); } catch { throw new Error('不是有效的 JSON 文件。'); }
-  if (json.web) throw new Error('这是“网页应用”凭据，请在 Google Cloud 创建“桌面应用”类型的 OAuth 客户端。');
+  try { json = JSON.parse(text); } catch { throw new Error(t('err.badJson')); }
+  if (json.web) throw new Error(t('err.webClient'));
   const c = json.installed;
   if (!c || typeof c.client_id !== 'string' || typeof c.client_secret !== 'string') {
-    throw new Error('文件中没有找到桌面应用的 client_id / client_secret。');
+    throw new Error(t('err.noDesktopClient'));
   }
   return { clientId: c.client_id, clientSecret: c.client_secret };
 }
@@ -49,7 +50,7 @@ const base64url = buffer => buffer.toString('base64').replace(/\+/g, '-').replac
 
 const CALLBACK_PAGE = message => `<!doctype html><meta charset="utf-8"><title>DeskCalendar</title>
 <body style="font-family:Segoe UI,Microsoft YaHei,sans-serif;background:#14181c;color:#e9ecef;display:grid;place-items:center;height:100vh;margin:0">
-<div style="text-align:center"><h2>${message}</h2><p style="color:#8b949e">现在可以关闭此页面，回到桌面日历。</p></div></body>`;
+<div style="text-align:center"><h2>${message}</h2><p style="color:#8b949e">${t('auth.close')}</p></div></body>`;
 
 // 打开系统浏览器授权，在 127.0.0.1 随机端口接收回调，用授权码 + PKCE 换取令牌。
 function authorize({ client, openUrl, fetchImpl = fetch, signal, timeoutMs = 5 * 60 * 1000 }) {
@@ -65,8 +66,8 @@ function authorize({ client, openUrl, fetchImpl = fetch, signal, timeoutMs = 5 *
       signal?.removeEventListener('abort', onAbort);
       error ? reject(error) : resolve(value);
     };
-    const onAbort = () => finish(new Error('已取消授权。'));
-    const timer = setTimeout(() => finish(new Error('授权超时，请重试。')), timeoutMs);
+    const onAbort = () => finish(new Error(t('err.authCancelled')));
+    const timer = setTimeout(() => finish(new Error(t('err.authTimeout'))), timeoutMs);
 
     const server = http.createServer(async (req, res) => {
       const url = new URL(req.url, redirectUri);
@@ -74,15 +75,15 @@ function authorize({ client, openUrl, fetchImpl = fetch, signal, timeoutMs = 5 *
       const code = url.searchParams.get('code');
       const error = url.searchParams.get('error');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      if (url.searchParams.get('state') !== state) { res.end(CALLBACK_PAGE('授权校验失败')); return finish(new Error('授权状态校验失败，请重试。')); }
-      if (error || !code) { res.end(CALLBACK_PAGE('授权未完成')); return finish(new Error(error === 'access_denied' ? '授权被拒绝。如果 Google 提示“应用正在测试中”，请在 Google Auth Platform →“目标对象”中把你的 Gmail 加为测试用户，或点击“发布应用”。' : `授权失败：${error || '没有授权码'}`)); }
-      res.end(CALLBACK_PAGE('授权成功 ✓'));
+      if (url.searchParams.get('state') !== state) { res.end(CALLBACK_PAGE(t('auth.stateFailed'))); return finish(new Error(t('err.authState'))); }
+      if (error || !code) { res.end(CALLBACK_PAGE(t('auth.notCompleted'))); return finish(new Error(error === 'access_denied' ? t('err.accessDenied') : t('err.authFailed', { error: error || t('auth.noCode') }))); }
+      res.end(CALLBACK_PAGE(t('auth.success')));
       try {
         const tokens = await tokenRequest(fetchImpl, {
           code, code_verifier: verifier, redirect_uri: redirectUri, grant_type: 'authorization_code',
           client_id: client.clientId, client_secret: client.clientSecret,
         });
-        if (!tokens.refresh_token) throw new Error('Google 没有返回刷新令牌，请在 Google 账号权限中移除本应用后重新授权。');
+        if (!tokens.refresh_token) throw new Error(t('err.noRefresh'));
         finish(null, tokens);
       } catch (e) { finish(e); }
     });
@@ -109,8 +110,8 @@ async function tokenRequest(fetchImpl, body) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    if (data.error === 'invalid_grant') throw new AuthError('Google 授权已过期或被撤销，请重新登录。');
-    throw httpError(res.status, `获取令牌失败：${data.error_description || data.error || res.status}`);
+    if (data.error === 'invalid_grant') throw new AuthError(t('err.authExpired'));
+    throw httpError(res.status, t('err.tokenFailed', { error: data.error_description || data.error || res.status }));
   }
   return { access_token: data.access_token, refresh_token: data.refresh_token, scope: data.scope, expires_at: Date.now() + (data.expires_in || 3600) * 1000 };
 }
@@ -127,7 +128,7 @@ function normalizeEvent(item, calendar) {
   const allDay = Boolean(item.start?.date);
   return {
     id: `${calendar.id}:${item.id}`,
-    title: item.summary || '（无标题）',
+    title: item.summary || t('untitled.event'),
     allDay,
     startKey: allDay ? item.start.date : null,
     endKey: allDay ? (item.end?.date || item.start.date) : null,
@@ -176,7 +177,7 @@ function normalizeTask(item, list) {
   const { time, notes } = splitNotes(item.notes);
   return {
     id: item.id, listId: list.id, listTitle: list.title || '',
-    title: item.title || '（无标题任务）', notes,
+    title: item.title || t('untitled.task'), notes,
     // Tasks API 只保存日期，due 固定为 UTC 零点，直接取日期部分。
     due: item.due ? item.due.slice(0, 10) : null,
     time: item.due ? time : null,
@@ -219,12 +220,12 @@ class GoogleClient {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const reason = data.error?.errors?.[0]?.reason;
-      if (res.status === 403 && reason === 'accessNotConfigured') throw new Error('Google Cloud 项目中尚未启用 Calendar API 或 Tasks API。');
+      if (res.status === 403 && reason === 'accessNotConfigured') throw new Error(t('err.apiDisabled'));
       if (res.status === 403 && (reason === 'insufficientPermissions' || /insufficient authentication scopes/i.test(data.error?.message || ''))) {
-        throw new Error('需要重新登录 Google 以授予编辑日程的权限：设置 → 退出登录 → 登录 Google。');
+        throw new Error(t('err.needScope'));
       }
-      if (res.status === 403 && reason === 'forbidden') throw new Error('没有修改这个日历的权限（只读日历）。');
-      throw httpError(res.status, `Google 接口错误（${res.status}）：${data.error?.message || res.statusText}`);
+      if (res.status === 403 && reason === 'forbidden') throw new Error(t('err.readOnly'));
+      throw httpError(res.status, t('err.api', { status: res.status, message: data.error?.message || res.statusText }));
     }
     return data;
   }
@@ -325,7 +326,7 @@ class GoogleClient {
   async createTask({ listId, title, due, time, notes = '' }) {
     const lists = this.lists || await this.taskLists();
     const list = lists.find(l => l.id === listId) || lists[0];
-    if (!list) throw new Error('没有可用的任务列表。');
+    if (!list) throw new Error(t('err.noTaskList'));
     const body = { title, notes: joinNotes(due ? time : null, notes), ...(due ? { due: `${due}T00:00:00.000Z` } : {}) };
     const created = await this.request(`${TASKS_API}/lists/${encodeURIComponent(list.id)}/tasks`, { method: 'POST', body: JSON.stringify(body) });
     return normalizeTask(created, list);

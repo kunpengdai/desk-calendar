@@ -17,7 +17,7 @@ async function loadWritableCalendars() {
 
 function needEditPermission() {
   if (app?.canEdit) return false;
-  toast('要编辑日程，请在设置中退出并重新登录 Google，授予编辑权限。');
+  toast(tr('note.needScope'));
   return true;
 }
 
@@ -25,9 +25,9 @@ function needEditPermission() {
 async function openEditor({ event = null, start = null, end = null, allDay = false } = {}) {
   if (!app?.connected || needEditPermission()) return;
   if (!writableCals.length) await loadWritableCalendars();
-  if (!event && !writableCals.length) { toast('没有可以写入的日历。'); return; }
+  if (!event && !writableCals.length) { toast(tr('editor.noWritable')); return; }
   editing = event;
-  $('#editor-heading').textContent = event ? '编辑日程' : '新建日程';
+  $('#editor-heading').textContent = tr(event ? 'editor.edit' : 'editor.new');
   $('#ev-error').textContent = '';
 
   const picker = $('#ev-calendar');
@@ -75,14 +75,14 @@ function syncAllDay() {
 function editorInput() {
   const startKey = $('#ev-start-date').value, endKeyIncl = $('#ev-end-date').value;
   const input = { title: $('#ev-title').value.trim(), location: $('#ev-location').value.trim(), description: $('#ev-description').value };
-  if (!input.title) throw new Error('请输入标题。');
-  if (!startKey || !endKeyIncl) throw new Error('请选择日期。');
+  if (!input.title) throw new Error(tr('err.titleRequired'));
+  if (!startKey || !endKeyIncl) throw new Error(tr('err.dateRequired'));
   if ($('#ev-allday').checked) {
-    if (endKeyIncl < startKey) throw new Error('结束日期不能早于开始日期。');
+    if (endKeyIncl < startKey) throw new Error(tr('err.endDateBeforeStart'));
     return { ...input, allDay: true, startKey, endKey: dayKey(addDays(parseKey(endKeyIncl), 1)) };
   }
   const start = combine(startKey, $('#ev-start-time').value), end = combine(endKeyIncl, $('#ev-end-time').value);
-  if (end <= start) throw new Error('结束时间必须晚于开始时间。');
+  if (end <= start) throw new Error(tr('err.endAfterStart'));
   return { ...input, allDay: false, start: start.toISOString(), end: end.toISOString() };
 }
 
@@ -100,7 +100,7 @@ async function saveEditor(ev) {
     events = old ? events.map(e => (e.id === old.id ? saved : e)) : [...events, saved];
     $('#editor').close();
     render();
-    toast(old ? `已保存：${saved.title}` : `已添加日程：${saved.title}`);
+    toast(tr(old ? 'toast.eventSaved' : 'toast.eventAdded', { title: saved.title }));
   } catch (error) { $('#ev-error').textContent = error.message; }
   finally { $('#ev-save').disabled = false; }
 }
@@ -112,9 +112,9 @@ async function deleteFromDetail() {
   if (!event && !task) return;
   if (!button.classList.contains('confirm')) {
     // 第一次点击只进入确认状态，3 秒内再点一次才删除
-    button.classList.add('confirm'); button.textContent = '确认删除？';
+    button.classList.add('confirm'); button.textContent = tr('detail.confirmDelete');
     clearTimeout(deleteTimer);
-    deleteTimer = setTimeout(() => { button.classList.remove('confirm'); button.textContent = '删除'; }, 3000);
+    deleteTimer = setTimeout(() => { button.classList.remove('confirm'); button.textContent = tr('detail.delete'); }, 3000);
     return;
   }
   clearTimeout(deleteTimer);
@@ -125,7 +125,7 @@ async function deleteFromDetail() {
     events = events.filter(e => e.id !== event.id);
     $('#detail').close();
     render();
-    toast(`已删除：${event.title}`);
+    toast(tr('toast.eventDeleted', { title: event.title }));
   } catch (error) { report(error); }
   finally { button.disabled = false; }
 }

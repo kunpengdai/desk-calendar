@@ -5,6 +5,8 @@ const path = require('node:path');
 const { GoogleClient, AuthError, EVENTS_SCOPE, authorize, parseClientFile } = require('./google');
 const { FakeGoogle } = require('./demo');
 const { DataStore } = require('./store');
+const I18N = require('./renderer/i18n');
+const { t } = I18N;
 
 const DEMO = process.argv.includes('--demo');
 const SMOKE = process.argv.includes('--smoke');
@@ -19,7 +21,16 @@ const files = {
   secrets: () => path.join(app.getPath('userData'), 'secrets.bin'),
   cache: () => path.join(app.getPath('userData'), 'cache.bin'),
 };
-const DEFAULT_PREFS = { view: 'month', pinned: false, opacity: 100, autoStart: true, tasksCollapsed: false, bounds: null };
+const DEFAULT_PREFS = { view: 'month', pinned: false, opacity: 100, autoStart: true, tasksCollapsed: false, lang: 'auto', bounds: null };
+// --ui-lang=zh|en 可在启动时指定界面语言（测试和截图用；不用 --lang，那是 Chromium 自己的参数）
+const LANG_ARG = (process.argv.find(a => a.startsWith('--ui-lang=')) || '').slice(10);
+// 明确选择了中文或英文时，让 Chromium 也使用该语言，日期 / 时间输入框的格式才会一致（重启后生效）
+{
+  let lang = LANG_ARG;
+  if (!lang && !DEMO) { try { lang = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'prefs.json'), 'utf8')).lang; } catch {} }
+  if (lang === 'zh' || lang === 'en') app.commandLine.appendSwitch('lang', lang === 'zh' ? 'zh-CN' : 'en-US');
+}
+function applyLang() { if (LANG_ARG && !applyLang.done) { prefs.lang = LANG_ARG; applyLang.done = true; } I18N.setLang(I18N.resolveLang(prefs.lang, app.getLocale())); }
 
 let win, tray, refreshTimer, retryTimer, authAbort = null, quitting = false;
 let prefs = { ...DEFAULT_PREFS };
@@ -42,7 +53,7 @@ function loadSecrets() {
   } catch {}
 }
 function saveSecrets() {
-  if (!safeStorage.isEncryptionAvailable()) throw new Error('系统加密不可用，无法安全保存登录信息。');
+  if (!safeStorage.isEncryptionAvailable()) throw new Error(t('err.noEncryption'));
   fs.writeFileSync(files.secrets(), safeStorage.encryptString(JSON.stringify(secrets)));
 }
 
@@ -99,7 +110,7 @@ function publicState() {
     // 旧版登录只有只读权限：令牌记录了 scope 且不含编辑日程权限时，需要重新登录。
     canEdit: DEMO || Boolean(google && (!secrets.tokens?.scope || secrets.tokens.scope.includes(EVENTS_SCOPE))),
     authorizing, account: DEMO ? 'demo@example.com' : s.account,
-    lastSync: s.lastSync, error: s.error, offline: s.offline, pending: s.pending,
+    lastSync: s.lastSync, error: s.error, offline: s.offline, pending: s.pending, lang: I18N.getLang(),
     prefs: { ...prefs, bounds: undefined },
   };
 }
@@ -118,27 +129,27 @@ const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 // 校验并整理来自界面的日程输入；partial=true 时用于修改（字段可缺省）。
 function cleanEventInput(input, partial) {
-  if (!input || typeof input !== 'object') throw new Error('日程无效。');
+  if (!input || typeof input !== 'object') throw new Error(t('err.eventInvalid'));
   const out = {};
   if (input.title !== undefined || !partial) {
     const title = typeof input.title === 'string' ? input.title.trim() : '';
-    if (!title) throw new Error('请输入日程标题。');
-    if (title.length > 1024) throw new Error('标题太长。');
+    if (!title) throw new Error(t('err.eventTitle'));
+    if (title.length > 1024) throw new Error(t('err.titleTooLong'));
     out.title = title;
   }
   for (const key of ['location', 'description']) {
     if (input[key] !== undefined) {
-      if (typeof input[key] !== 'string' || input[key].length > 8000) throw new Error('内容无效。');
+      if (typeof input[key] !== 'string' || input[key].length > 8000) throw new Error(t('err.contentInvalid'));
       out[key] = input[key];
     }
   }
   if (input.allDay) {
-    if (!DATE_KEY.test(input.startKey || '') || !DATE_KEY.test(input.endKey || '') || input.endKey <= input.startKey) throw new Error('日期无效。');
+    if (!DATE_KEY.test(input.startKey || '') || !DATE_KEY.test(input.endKey || '') || input.endKey <= input.startKey) throw new Error(t('err.dateInvalid'));
     Object.assign(out, { allDay: true, startKey: input.startKey, endKey: input.endKey });
   } else if (input.start !== undefined || input.end !== undefined || !partial) {
     const start = new Date(input.start), end = new Date(input.end);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error('时间无效。');
-    if (end <= start) throw new Error('结束时间必须晚于开始时间。');
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error(t('err.timeInvalid'));
+    if (end <= start) throw new Error(t('err.endAfterStart'));
     Object.assign(out, { allDay: false, start: start.toISOString(), end: end.toISOString() });
   }
   return out;
@@ -160,10 +171,10 @@ function rescheduleTask(listId, taskId, input) {
 const deleteTask = (listId, taskId) => store.deleteTask(listId, taskId);
 
 function createTask(input) {
-  if (!input || typeof input !== 'object') throw new Error('任务无效。');
+  if (!input || typeof input !== 'object') throw new Error(t('err.taskInvalid'));
   const title = typeof input.title === 'string' ? input.title.trim() : '';
-  if (!title) throw new Error('请输入任务名称。');
-  if (title.length > 1024) throw new Error('任务名称太长。');
+  if (!title) throw new Error(t('err.taskTitle'));
+  if (title.length > 1024) throw new Error(t('err.taskTitleTooLong'));
   const due = DATE_KEY.test(input.due || '') ? input.due : null;
   const time = due && TIME_RE.test(input.time || '') ? input.time : null;
   const listId = typeof input.listId === 'string' ? input.listId : '';
@@ -176,7 +187,7 @@ const setTaskDone = (listId, taskId, done) => store.setTaskDone(listId, taskId, 
 // ---------- 授权 ----------
 async function importClient() {
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-    title: '选择 Google OAuth 客户端 JSON（桌面应用）', properties: ['openFile'],
+    title: t('dialog.chooseClient'), properties: ['openFile'],
     filters: [{ name: 'JSON', extensions: ['json'] }],
   });
   if (canceled || !filePaths[0]) return publicState();
@@ -188,8 +199,8 @@ async function importClient() {
 }
 
 async function connect() {
-  if (DEMO) throw new Error('示例模式不能登录，请用 npm start 正常启动。');
-  if (!secrets.client) throw new Error('请先导入 OAuth 客户端 JSON 文件。');
+  if (DEMO) throw new Error(t('err.demoNoLogin'));
+  if (!secrets.client) throw new Error(t('err.importFirst'));
   authAbort?.abort();
   authAbort = new AbortController();
   authorizing = true; notifyRenderer();
@@ -231,8 +242,9 @@ function applyPrefs() {
 }
 
 function setPrefs(value) {
-  if (!value || typeof value !== 'object') throw new Error('设置无效。');
+  if (!value || typeof value !== 'object') throw new Error(t('err.prefsInvalid'));
   if (['month', 'week', 'day'].includes(value.view)) prefs.view = value.view;
+  if (['auto', 'zh', 'en'].includes(value.lang)) { prefs.lang = value.lang; applyLang(); }
   for (const key of ['pinned', 'autoStart', 'tasksCollapsed']) if (typeof value[key] === 'boolean') prefs[key] = value[key];
   if (Number.isFinite(value.opacity)) prefs.opacity = Math.min(100, Math.max(40, Math.round(value.opacity)));
   savePrefs(); applyPrefs();
@@ -242,7 +254,7 @@ function setPrefs(value) {
 const OPEN_HOSTS = new Set(['calendar.google.com', 'www.google.com', 'tasks.google.com', 'console.cloud.google.com', 'developers.google.com', 'myaccount.google.com']);
 function openExternal(url) {
   const parsed = new URL(url);
-  if (parsed.protocol !== 'https:' || !OPEN_HOSTS.has(parsed.hostname)) throw new Error('不支持打开这个链接。');
+  if (parsed.protocol !== 'https:' || !OPEN_HOSTS.has(parsed.hostname)) throw new Error(t('err.linkBlocked'));
   return shell.openExternal(parsed.toString());
 }
 
@@ -258,7 +270,7 @@ function registerIpc() {
   // 仅示例模式：模拟断网 / 恢复网络，用于演示和测试离线同步
   if (DEMO) handle('debug:offline', async offline => { google.offline = Boolean(offline); if (!offline) await store.checkConnection(); return publicState(); });
   handle('events', (timeMin, timeMax) => {
-    if (typeof timeMin !== 'string' || typeof timeMax !== 'string') throw new Error('时间范围无效。');
+    if (typeof timeMin !== 'string' || typeof timeMax !== 'string') throw new Error(t('err.rangeInvalid'));
     return getEvents(timeMin, timeMax);
   });
   handle('tasks', (timeMin, timeMax) => getTasks(typeof timeMin === 'string' ? timeMin : null, typeof timeMax === 'string' ? timeMax : null));
@@ -311,13 +323,13 @@ function showWindow() { if (!win) return; win.show(); win.focus(); }
 function rebuildTray() {
   if (!tray) return;
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '显示日历', click: showWindow },
-    { label: '立即刷新', click: () => notifyRenderer('refresh') },
+    { label: t('tray.show'), click: showWindow },
+    { label: t('tray.refresh'), click: () => notifyRenderer('refresh') },
     { type: 'separator' },
-    { label: '窗口置顶', type: 'checkbox', checked: prefs.pinned, click: item => setPrefs({ pinned: item.checked }) },
-    { label: '开机启动', type: 'checkbox', checked: prefs.autoStart, enabled: !DEMO, click: item => setPrefs({ autoStart: item.checked }) },
+    { label: t('tray.pin'), type: 'checkbox', checked: prefs.pinned, click: item => setPrefs({ pinned: item.checked }) },
+    { label: t('tray.autostart'), type: 'checkbox', checked: prefs.autoStart, enabled: !DEMO, click: item => setPrefs({ autoStart: item.checked }) },
     { type: 'separator' },
-    { label: '退出', click: () => { quitting = true; app.quit(); } },
+    { label: t('tray.quit'), click: () => { quitting = true; app.quit(); } },
   ]));
 }
 
@@ -348,7 +360,7 @@ async function createWindow() {
   win.on('moved', remember); win.on('resized', remember);
 
   tray = new Tray(trayIcon());
-  tray.setToolTip('DeskCalendar · Google 日历');
+  tray.setToolTip(t('tray.tooltip'));
   tray.on('click', showWindow);
   applyPrefs();
 
@@ -367,7 +379,7 @@ async function createWindow() {
 // ---------- 冒烟测试（示例模式下驱动真实界面并截图） ----------
 // ---------- README 截图（示例数据，干净状态） ----------
 async function runScreenshots() {
-  const out = path.join(__dirname, '..', 'docs', 'screenshots');
+  const out = path.join(__dirname, '..', 'docs', 'screenshots', I18N.getLang());
   fs.mkdirSync(out, { recursive: true });
   const js = code => win.webContents.executeJavaScript(code);
   const snap = async name => {
@@ -399,9 +411,10 @@ async function runScreenshots() {
       const top = () => g.getBoundingClientRect().top, x = g.getBoundingClientRect().left + 220;
       const fire = (t, type, y) => t.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: x, clientY: top() + y, button: 0 }));
       fire(g, 'pointerdown', 14 * 48 + 2); fire(window, 'pointermove', 15 * 48); fire(window, 'pointermove', 15.5 * 48); fire(window, 'pointerup', 15.5 * 48);
-      await new Promise(r => setTimeout(r, 300));
-      document.querySelector('#ev-title').value = '和朋友喝咖啡';
-      document.querySelector('#ev-location').value = '街角咖啡馆';
+      for (let i = 0; i < 40 && !document.querySelector('#editor').open; i++) await new Promise(r => setTimeout(r, 100));
+      if (!document.querySelector('#editor').open) throw new Error('editor did not open');
+      document.querySelector('#ev-title').value = ${JSON.stringify(t('demo.coffee'))};
+      document.querySelector('#ev-location').value = ${JSON.stringify(t('demo.cafe'))};
     })()`);
     await snap('editor.png');
     await js(`document.querySelector('#ev-cancel').click()`);
@@ -410,9 +423,9 @@ async function runScreenshots() {
     await js(`(async () => {
       await desk.debugOffline(true);
       document.querySelector('#timeline-scroll').scrollTop = 8.6 * 48;
-      const row = [...document.querySelectorAll('.task')].find(r => r.textContent.includes('买牛奶'));
+      const row = [...document.querySelectorAll('.task')].find(r => r.textContent.includes(${JSON.stringify(t('demo.t3'))}));
       row.querySelector('.check').click(); await new Promise(r => setTimeout(r, 300));
-      const b = [...document.querySelectorAll('#timeline .block')].find(x => x.textContent.includes('晨会'));
+      const b = [...document.querySelectorAll('#timeline .block')].find(x => x.textContent.includes(${JSON.stringify(t('demo.standup'))}));
       const r = b.getBoundingClientRect(), fire = (t, type, y) => t.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: r.left + 20, clientY: y, button: 0 }));
       fire(b, 'pointerdown', r.top + 5); fire(window, 'pointermove', r.top + 40); fire(window, 'pointermove', r.top + 77); fire(window, 'pointerup', r.top + 77);
       await new Promise(r => setTimeout(r, 500));
@@ -593,6 +606,23 @@ async function runSmoke() {
       assert((await desk.tasks()).data.find(t => t.title === '买牛奶和鸡蛋').completed, 'offline task completion reached server');
       await wait(300);
       assert(blockOf('离线新建') && !blockOf('离线新建').classList.contains('pending'), 'pending mark cleared after sync');
+
+      // ---- 语言切换：中文 → English → 中文 ----
+      const setLang = async lang => { $('#pref-lang').value = lang; $('#pref-lang').dispatchEvent(new Event('change')); await wait(400); };
+      await setLang('en');
+      assert((await desk.state()).data.lang === 'en', 'language preference switched to English');
+      assert($('#today').textContent === 'Today' && $('[data-view=week]').textContent === 'Week', 'toolbar in English');
+      assert(/^[A-Z][a-z]{2},\\s[A-Z][a-z]{2}\\s\\d+$/.test($('#today-label').textContent), 'English date format: ' + $('#today-label').textContent);
+      assert($('#status-text').textContent.startsWith('Demo'), 'status bar in English');
+      assert($('#nt-title').placeholder.startsWith('New task') && $('.tasks-filter button').textContent === 'All', 'task panel in English');
+      assert(!/[一-鿿]/.test([...$$('#setup-steps li, .card h3, .switch span, footer button')].map(n => n.textContent).join('')), 'no Chinese left in static UI');
+      $('[data-view=week]').click(); await wait(300);
+      assert($('.wk-dow').textContent === 'Mon' && [...$$('.wk-lunar')].every(n => !n.textContent), 'English week header without lunar dates');
+      $('[data-view=month]').click(); await wait(200);
+      assert($('#weekdays').textContent.startsWith('Mon') && /^[A-Z][a-z]+\\s\\d{4}$/.test($('#title').textContent), 'English month header');
+      await setLang('zh');
+      assert($('#today').textContent === '今天' && $('#weekdays').textContent.startsWith('一'), 'switched back to Chinese');
+      $('[data-view=day]').click(); await wait(200);
       return 'ok';
     })()`);
     await snap('day.png');
@@ -639,7 +669,7 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', showWindow);
   app.whenReady().then(() => {
-    loadPrefs(); if (!DEMO) loadSecrets(); initStore(); buildClient(); registerIpc();
+    loadPrefs(); applyLang(); if (!DEMO) loadSecrets(); initStore(); buildClient(); registerIpc();
     return createWindow();
   }).catch(error => { console.error(error); app.exit(1); });
   app.on('before-quit', () => { quitting = true; clearInterval(refreshTimer); clearInterval(retryTimer); authAbort?.abort(); try { writeCacheNow(); } catch {} });

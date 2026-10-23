@@ -286,3 +286,7 @@ dialog::backdrop { background: #0009; }
   content: " ⟳"; color: var(--warn); font-size: 10px; font-weight: 400; text-decoration: none; display: inline-block;
 }
 .block.pending, .wk-bar.pending { outline: 1px dashed #fdd66399; outline-offset: -1px; }
+
+/* 语言选择 */
+.lang-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 10px; }
+#pref-lang { background: var(--bg); color: var(--ink); border: 1px solid #ffffff1a; border-radius: 7px; font: inherit; font-size: 12px; padding: 4px 8px; }
